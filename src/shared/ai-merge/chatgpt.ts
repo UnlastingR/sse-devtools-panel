@@ -156,7 +156,7 @@ function applyMetadataPath(
   for (let i = 0; i < parts.length - 1; i++) {
     const key = parts[i]!;
     const nextKey = parts[i + 1];
-    const existing = Array.isArray(cur) ? cur[Number(key)] : cur[key];
+    const existing: unknown = Array.isArray(cur) ? cur[Number(key)] : cur[key];
     if (isRecord(existing) || Array.isArray(existing)) {
       cur = existing;
       continue;
@@ -169,7 +169,7 @@ function applyMetadataPath(
 
   const last = parts.at(-1);
   if (!last) return;
-  const getCurrent = () => (Array.isArray(cur) ? cur[Number(last)] : cur[last]);
+  const getCurrent = (): unknown => (Array.isArray(cur) ? cur[Number(last)] : cur[last]);
   const setCurrent = (next: unknown) => {
     if (Array.isArray(cur)) cur[Number(last)] = next;
     else cur[last] = next;
