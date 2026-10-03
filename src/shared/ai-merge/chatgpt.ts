@@ -7,6 +7,7 @@ type ChatgptMessage = {
   role: string;
   authorName?: string;
   createdAt?: number;
+  sourceAnalysisMessageId?: string;
   recipient?: string;
   channel?: string | null;
   contentType?: string;
@@ -84,6 +85,7 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
   const author = isRecord(raw.author) ? raw.author : null;
   const role = author && typeof author.role === "string" ? author.role : "unknown";
   const parsedContent = messageText(raw.content);
+  const rawContent = isRecord(raw.content) ? raw.content : null;
   const metadata = isRecord(raw.metadata) ? { ...raw.metadata } : {};
   const existing = state.messages.get(raw.id);
   const msg: ChatgptMessage = {
@@ -91,6 +93,10 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
     role,
     authorName: author && typeof author.name === "string" ? author.name : existing?.authorName,
     createdAt: typeof raw.create_time === "number" ? raw.create_time : existing?.createdAt,
+    sourceAnalysisMessageId:
+      rawContent && typeof rawContent.source_analysis_msg_id === "string"
+        ? rawContent.source_analysis_msg_id
+        : existing?.sourceAnalysisMessageId,
     recipient: typeof raw.recipient === "string" ? raw.recipient : existing?.recipient,
     channel:
       typeof raw.channel === "string" || raw.channel === null ? raw.channel : existing?.channel,
@@ -513,6 +519,56 @@ function reasoningTitle(msg: ChatgptMessage): string {
     : "";
 }
 
+function referencedMessageIds(msg: ChatgptMessage): string[] {
+  const ids: string[] = [];
+  if (msg.sourceAnalysisMessageId) ids.push(msg.sourceAnalysisMessageId);
+  const inline = isRecord(msg.metadata.inline_cot_expandable_content)
+    ? msg.metadata.inline_cot_expandable_content
+    : null;
+  if (inline && Array.isArray(inline.source_message_ids)) {
+    for (const id of inline.source_message_ids) {
+      if (typeof id === "string" && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function relatedLogicalTool(
+  msg: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): ChatgptMessage | undefined {
+  if (isLogicalToolCall(msg)) return msg;
+  for (const id of referencedMessageIds(msg)) {
+    const referenced = state.messages.get(id);
+    if (!referenced) continue;
+    if (isLogicalToolCall(referenced)) return referenced;
+    const parent = logicalToolParent(referenced, state);
+    if (parent) return parent;
+  }
+  return logicalToolParent(msg, state);
+}
+
+function toolContextLabel(tool: ChatgptMessage, state: ChatgptWebMergeState): string {
+  if (tool.recipient === "web.run") return "web.run · SEARCH";
+  if (tool.recipient === "python") return "python · BUILTIN";
+  const identity = toolIdentity(tool, state);
+  const provider = identity.provider ?? tool.recipient ?? "tool";
+  const kind = identity.kind ? ` · ${identity.kind.toUpperCase()}` : "";
+  const source = identity.source ? ` · ${identity.source.toUpperCase()}` : "";
+  const operation = identity.operation ? ` · ${identity.operation}` : "";
+  return `${provider}${kind}${source}${operation}`;
+}
+
+function reasoningLabel(
+  prefix: "阶段" | "摘要",
+  msg: ChatgptMessage,
+  text: string,
+  state: ChatgptWebMergeState,
+): string {
+  const tool = relatedLogicalTool(msg, state);
+  return tool ? `${prefix} · ${toolContextLabel(tool, state)} · ${text}` : `${prefix} · ${text}`;
+}
+
 function visibleReasoningText(state: ChatgptWebMergeState): string {
   const out: string[] = [];
   const seenTitles = new Set<string>();
@@ -527,7 +583,7 @@ function visibleReasoningText(state: ChatgptWebMergeState): string {
     const title = reasoningTitle(msg);
     if (title && !seenTitles.has(title)) {
       seenTitles.add(title);
-      out.push(`${reasoningTimePrefix(msg, start)}阶段 · ${title}`);
+      out.push(`${reasoningTimePrefix(msg, start)}${reasoningLabel("阶段", msg, title, state)}`);
     }
 
     if (isLogicalToolCall(msg)) {
@@ -574,7 +630,9 @@ function visibleReasoningText(state: ChatgptWebMergeState): string {
       const isDurationOnly = /^思考了\s*\d+(?:\.\d+)?s$/i.test(summary);
       if (!isDurationOnly && !seenSummaries.has(summary)) {
         seenSummaries.add(summary);
-        out.push(`${reasoningTimePrefix(msg, start)}摘要 · ${summary}`);
+        out.push(
+          `${reasoningTimePrefix(msg, start)}${reasoningLabel("摘要", msg, summary, state)}`,
+        );
       }
     }
   }

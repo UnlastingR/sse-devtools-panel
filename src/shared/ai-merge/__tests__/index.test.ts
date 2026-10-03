@@ -613,12 +613,18 @@ describe("ai-merge", () => {
         second.results.length === 1 && second.results[0].title === "Two",
         "second web results",
       );
-      assert(t.channels.reasoning.includes("阶段 · 搜索网页"), "reasoning stage included");
       assert(
-        t.channels.reasoning.includes("工具 · web.run · 1 个查询 / 1 个结果"),
+        t.channels.reasoning.includes("阶段 · web.run · SEARCH · 搜索网页"),
+        "reasoning stage linked to search",
+      );
+      assert(
+        t.channels.reasoning.includes("工具 · web.run · SEARCH · 1 个查询 / 1 个结果"),
         "tool trace included",
       );
-      assert(t.channels.reasoning.includes("摘要 · 已完成两轮搜索"), "summary included");
+      assert(
+        t.channels.reasoning.includes("摘要 · web.run · SEARCH · 已完成两轮搜索"),
+        "summary linked to search",
+      );
       assert(t.channels.reasoning.includes("总思考时间：5s"), "duration included");
       assert(!t.channels.reasoning.includes("思考了 5s"), "duration recap de-duplicated");
     }
