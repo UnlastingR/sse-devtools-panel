@@ -70,7 +70,8 @@ export function scanStreamAnomalies(record: StreamRecord): StreamAnomaly[] {
       });
     }
     const trimmed = data.trimStart();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    const isProtocolSentinel = trimmed.trim() === "[DONE]";
+    if (!isProtocolSentinel && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
       try {
         JSON.parse(data);
       } catch {
