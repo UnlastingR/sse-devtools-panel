@@ -5,6 +5,7 @@ import { isRecord, parseEventData } from "./helpers";
 type ChatgptMessage = {
   id: string;
   role: string;
+  authorName?: string;
   recipient?: string;
   channel?: string | null;
   contentType?: string;
@@ -14,6 +15,22 @@ type ChatgptMessage = {
   status?: string;
   endTurn?: boolean | null;
 };
+
+const CHATGPT_RICH_BLOCK_RE = /\uE200([A-Za-z0-9_:-]+)\uE202[\s\S]*?\uE201/g;
+const CHATGPT_RICH_BLOCK_TAIL_RE = /\uE200[A-Za-z0-9_:-]*\uE202[^\uE201]*$/g;
+
+/**
+ * ChatGPT answer text can contain private-use rich-UI markers such as
+ * cite/navlist/genui. The DevTools conversation pane is plain text, so hide
+ * those transport markers instead of rendering unsupported PUA glyphs.
+ */
+export function sanitizeChatgptAnswerText(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(CHATGPT_RICH_BLOCK_RE, "")
+    .replace(CHATGPT_RICH_BLOCK_TAIL_RE, "")
+    .replace(/[\uE200\uE201\uE202]/g, "");
+}
 
 export type ChatgptWebMergeState = {
   messages: Map<string, ChatgptMessage>;
@@ -52,6 +69,15 @@ function messageText(content: unknown): {
   return { contentType, text: "", reasoningSummary: "" };
 }
 
+function thoughtSummaries(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((thought) =>
+      isRecord(thought) && typeof thought.summary === "string" ? thought.summary.trim() : "",
+    )
+    .filter(Boolean);
+}
+
 function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
   if (!isRecord(raw) || typeof raw.id !== "string") return;
   const author = isRecord(raw.author) ? raw.author : null;
@@ -62,6 +88,7 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
   const msg: ChatgptMessage = {
     id: raw.id,
     role,
+    authorName: author && typeof author.name === "string" ? author.name : existing?.authorName,
     recipient: typeof raw.recipient === "string" ? raw.recipient : existing?.recipient,
     channel:
       typeof raw.channel === "string" || raw.channel === null ? raw.channel : existing?.channel,
@@ -135,6 +162,15 @@ function applyMessagePatch(
     return;
   }
 
+  if (path === "/message/content/thoughts" && op === "append") {
+    const summaries = thoughtSummaries(value);
+    if (summaries.length > 0) {
+      const prefix = msg.reasoningSummary ? "\n" : "";
+      msg.reasoningSummary += `${prefix}${summaries.join("\n")}`;
+    }
+    return;
+  }
+
   if (path === "/message/status" && typeof value === "string") {
     msg.status = value;
     return;
@@ -181,9 +217,153 @@ function finalAssistantText(state: ChatgptWebMergeState): string {
     if (msg.contentType !== "text") continue;
     const isFinal = msg.channel === "final" || (msg.channel == null && msg.endTurn === true);
     if (!isFinal) continue;
-    out.push(msg.text);
+    out.push(sanitizeChatgptAnswerText(msg.text));
   }
   return out.join("\n\n");
+}
+
+function parentId(msg: ChatgptMessage): string | undefined {
+  return typeof msg.metadata.parent_id === "string" ? msg.metadata.parent_id : undefined;
+}
+
+function isDescendantOf(
+  candidate: ChatgptMessage,
+  ancestorId: string,
+  state: ChatgptWebMergeState,
+): boolean {
+  let next = parentId(candidate);
+  const seen = new Set<string>();
+  while (next && !seen.has(next)) {
+    if (next === ancestorId) return true;
+    seen.add(next);
+    next = state.messages.get(next) ? parentId(state.messages.get(next)!) : undefined;
+  }
+  return false;
+}
+
+function logicalToolParent(
+  msg: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): ChatgptMessage | undefined {
+  let next = parentId(msg);
+  const seen = new Set<string>();
+  while (next && !seen.has(next)) {
+    seen.add(next);
+    const parent = state.messages.get(next);
+    if (!parent) return undefined;
+    if (
+      parent.role === "assistant" &&
+      parent.recipient &&
+      parent.recipient !== "all" &&
+      parent.recipient !== "api_tool.call_tool"
+    ) {
+      return parent;
+    }
+    next = parentId(parent);
+  }
+  return undefined;
+}
+
+function searchQueriesFromMetadata(metadata: Record<string, unknown>): string[] {
+  const bag = isRecord(metadata.search_model_queries) ? metadata.search_model_queries : null;
+  if (!bag || !Array.isArray(bag.queries)) return [];
+  return bag.queries.filter((q): q is string => typeof q === "string");
+}
+
+function resultRefId(raw: unknown): string | undefined {
+  if (!isRecord(raw)) return undefined;
+  const turn = raw.turn_index;
+  const type = raw.ref_type;
+  const index = raw.ref_index;
+  if ((typeof turn === "number" || typeof turn === "string") && typeof type === "string") {
+    if (typeof index === "number" || typeof index === "string") {
+      return `turn${turn}${type}${index}`;
+    }
+  }
+  return undefined;
+}
+
+function searchResultsFromGroups(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const group of value) {
+    if (!isRecord(group) || !Array.isArray(group.entries)) continue;
+    const domain = typeof group.domain === "string" ? group.domain : "";
+    for (const entry of group.entries) {
+      if (!isRecord(entry)) continue;
+      const title = typeof entry.title === "string" ? entry.title : "";
+      const url = typeof entry.url === "string" ? entry.url : "";
+      const snippet = typeof entry.snippet === "string" ? entry.snippet : "";
+      const site =
+        typeof entry.attribution === "string"
+          ? entry.attribution
+          : typeof entry.site_name === "string"
+            ? entry.site_name
+            : domain;
+      if (!title && !url && !snippet) continue;
+      out.push({
+        title,
+        url,
+        snippet,
+        site_name: site,
+        cite_index: resultRefId(entry.ref_id),
+      });
+    }
+  }
+  return out;
+}
+
+function searchDetailsForTool(
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): { queries: string[]; results: Array<Record<string, unknown>> } {
+  const queries: string[] = [];
+  const results: Array<Record<string, unknown>> = [];
+  const seenQueries = new Set<string>();
+  const seenResults = new Set<string>();
+
+  const ingest = (msg: ChatgptMessage) => {
+    for (const q of searchQueriesFromMetadata(msg.metadata)) {
+      if (!seenQueries.has(q)) {
+        seenQueries.add(q);
+        queries.push(q);
+      }
+    }
+    const inline = isRecord(msg.metadata.inline_cot_expandable_content)
+      ? msg.metadata.inline_cot_expandable_content
+      : null;
+    const groupSets = [msg.metadata.search_result_groups, inline?.search_result_groups];
+    for (const groups of groupSets) {
+      for (const result of searchResultsFromGroups(groups)) {
+        const key = String(result.url || result.title || result.cite_index || "");
+        if (key && seenResults.has(key)) continue;
+        if (key) seenResults.add(key);
+        results.push(result);
+      }
+    }
+  };
+
+  ingest(tool);
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || !isDescendantOf(msg, tool.id, state)) continue;
+    ingest(msg);
+  }
+  return { queries, results };
+}
+
+function connectorPayloadForTool(tool: ChatgptMessage, state: ChatgptWebMergeState): string {
+  const own = tool.metadata.connector_tool_payload;
+  if (typeof own === "string" && own) return own;
+
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || !isDescendantOf(msg, tool.id, state)) continue;
+    if (msg.role !== "assistant" || msg.recipient !== "api_tool.call_tool") continue;
+    const payload = msg.metadata.connector_tool_payload;
+    if (typeof payload === "string" && payload) return payload;
+  }
+  return tool.text || "{}";
 }
 
 function visibleReasoningText(state: ChatgptWebMergeState): string {
@@ -221,10 +401,14 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
     const msg = state.messages.get(id);
     if (!msg || msg.role !== "assistant") continue;
     if (!msg.recipient || msg.recipient === "all") continue;
-    const payload = msg.metadata.connector_tool_payload;
-    let args = typeof payload === "string" ? payload : msg.text || "";
-    if (!args && isRecord(msg.metadata.search_model_queries)) {
-      args = JSON.stringify(msg.metadata.search_model_queries);
+    if (msg.recipient === "api_tool.call_tool" && logicalToolParent(msg, state)) continue;
+
+    let args = connectorPayloadForTool(msg, state);
+    if (msg.recipient === "web.run") {
+      const search = searchDetailsForTool(msg, state);
+      if (search.queries.length > 0 || search.results.length > 0) {
+        args = JSON.stringify({ type: "SEARCH", queries: search.queries, results: search.results });
+      }
     }
     out.push({
       index: out.length,

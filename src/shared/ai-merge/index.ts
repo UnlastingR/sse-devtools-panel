@@ -24,6 +24,7 @@ export {
   pushChatgptWeb,
   snapshotChatgptWeb,
   mergeChatgptWeb,
+  sanitizeChatgptAnswerText,
 } from "./chatgpt";
 
 export type { DeepseekWebMergeState, FragType } from "./deepseek";

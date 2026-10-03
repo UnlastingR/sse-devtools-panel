@@ -63,9 +63,28 @@ export function formatApproxSize(charCount: number): string {
 
 export function formatGapBinLabel(bin: HistogramBin): string {
   if (!Number.isFinite(bin.toMs)) {
-    return bin.fromMs >= 1000 ? `≥${bin.fromMs / 1000}s` : `≥${bin.fromMs}ms`;
+    if (bin.fromMs >= 60_000) return `≥${bin.fromMs / 60_000}m`;
+    if (bin.fromMs >= 1000) return `≥${bin.fromMs / 1000}s`;
+    return `≥${bin.fromMs}ms`;
   }
-  return `${bin.fromMs}–${bin.toMs}ms`;
+  const compact = (ms: number): string => {
+    if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000}m`;
+    if (ms >= 1000 && ms % 1000 === 0) return `${ms / 1000}s`;
+    return `${ms}ms`;
+  };
+  const from = compact(bin.fromMs);
+  const to = compact(bin.toMs);
+  const unitOf = (label: string): "ms" | "s" | "m" => {
+    if (label.endsWith("ms")) return "ms";
+    if (label.endsWith("s")) return "s";
+    return "m";
+  };
+  const unit = unitOf(from);
+  if (unit === unitOf(to)) {
+    const trim = unit === "ms" ? 2 : 1;
+    return `${from.slice(0, -trim)}–${to}`;
+  }
+  return `${from}–${to}`;
 }
 
 export function sanitizeFilenamePart(value: string): string {

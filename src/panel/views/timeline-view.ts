@@ -22,7 +22,7 @@ export type RenderTimelineOptions = {
 export function createGapHistogramSvg(bins: HistogramBin[]): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "gap-histogram");
-  svg.setAttribute("viewBox", "0 0 440 170");
+  svg.setAttribute("viewBox", "0 0 440 196");
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", t("timelineGapHistogram"));
 
@@ -30,9 +30,9 @@ export function createGapHistogramSvg(bins: HistogramBin[]): SVGSVGElement {
   const padL = 42;
   const padR = 12;
   const padT = 22;
-  const padB = 48;
+  const padB = 72;
   const plotW = 440 - padL - padR;
-  const plotH = 170 - padT - padB;
+  const plotH = 196 - padT - padB;
   const gap = 4;
   const barW = Math.max(8, (plotW - gap * (bins.length - 1)) / bins.length);
   const hotThreshold = 500;
@@ -107,7 +107,8 @@ export function createGapHistogramSvg(bins: HistogramBin[]): SVGSVGElement {
     label.setAttribute("class", "axis-label bin-label");
     label.setAttribute("x", String(x + barW / 2));
     label.setAttribute("y", String(padT + plotH + 14));
-    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("text-anchor", "end");
+    label.setAttribute("transform", `rotate(-38 ${x + barW / 2} ${padT + plotH + 14})`);
     label.textContent = formatGapBinLabel(bin);
     svg.appendChild(label);
   }
@@ -115,7 +116,7 @@ export function createGapHistogramSvg(bins: HistogramBin[]): SVGSVGElement {
   const xTitle = document.createElementNS("http://www.w3.org/2000/svg", "text");
   xTitle.setAttribute("class", "axis-title");
   xTitle.setAttribute("x", String(padL + plotW / 2));
-  xTitle.setAttribute("y", "164");
+  xTitle.setAttribute("y", "190");
   xTitle.setAttribute("text-anchor", "middle");
   xTitle.textContent = t("timelineGapHistogramX");
   svg.appendChild(xTitle);

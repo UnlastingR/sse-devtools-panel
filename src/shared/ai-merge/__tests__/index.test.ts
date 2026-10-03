@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { detectAiProfile, vendorHintFromUrl } from "../../ai-profile";
-import { conversationHasContent, mergeAiConversation } from "../index";
+import { conversationHasContent, mergeAiConversation, sanitizeChatgptAnswerText } from "../index";
 
 function assert(cond: unknown, msg: string): asserts cond {
   expect(cond, msg).toBeTruthy();
@@ -147,6 +147,171 @@ describe("ai-merge", () => {
       assert(t.channels.tools[0]?.name === "functions.exec", "chatgpt tool name");
       assert(t.endMeta.model === "gpt-5-6-thinking", "chatgpt model");
       assert(t.endMeta.finishReason === "stop", "chatgpt finish");
+
+      const rich =
+        '正文\n\uE200cite\uE202turn1news2\uE201\n\uE200navlist\uE202继续阅读\uE202turn1news2\uE201\n\uE200genui\uE202{"x":1}\uE201';
+      assert(sanitizeChatgptAnswerText(rich).trim() === "正文", "chatgpt rich markers stripped");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "outer",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {},
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "connector",
+                author: { role: "assistant" },
+                content: { content_type: "code", text: "{}" },
+                metadata: {
+                  parent_id: "outer",
+                  connector_tool_payload: '{"workspaceId":"ws","path":"a.ts"}',
+                },
+                recipient: "api_tool.call_tool",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `connector tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.name === "functions.exec", "outer logical tool name");
+      assert(t.channels.tools[0]?.arguments.includes('"path":"a.ts"'), "connector args merged");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "web-call",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {},
+                recipient: "web.run",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "web-query",
+                author: { role: "tool", name: "web.run" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  parent_id: "web-call",
+                  search_model_queries: { queries: ["alpha", "beta"] },
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "web-results",
+                author: { role: "tool", name: "web.run" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  parent_id: "web-query",
+                  search_result_groups: [
+                    {
+                      domain: "example.com",
+                      entries: [
+                        {
+                          title: "Example",
+                          url: "https://example.com/a",
+                          snippet: "snippet",
+                          attribution: "example.com",
+                          ref_id: { turn_index: 1, ref_type: "search", ref_index: 2 },
+                        },
+                      ],
+                    },
+                  ],
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `web tools: ${t.channels.tools.length}`);
+      const args = JSON.parse(t.channels.tools[0]!.arguments);
+      assert(args.queries.length === 2, "web queries restored");
+      assert(args.results.length === 1, "web results restored");
+      assert(args.results[0].cite_index === "turn1search2", "web result ref restored");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "thoughts",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "第一步", content: "hidden", finished: true }],
+                },
+                metadata: {},
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            p: "/message/content/thoughts",
+            o: "append",
+            v: [{ summary: "第二步", content: "hidden too", finished: true }],
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(
+        t.channels.reasoning === "第一步\n第二步",
+        `thought summaries: ${t.channels.reasoning}`,
+      );
+      assert(!t.channels.reasoning.includes("hidden"), "private thought content must not leak");
     }
 
     {
