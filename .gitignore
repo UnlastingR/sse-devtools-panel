@@ -6,6 +6,8 @@ dist.zip
 .tmp-test-*/
 .tmp-debug/
 .release-staging/
+.release-download/
+.wrangler/
 website/node_modules/
 website/dist/
 website/public/screenshots/*

@@ -1,0 +1,138 @@
+name: Deploy CRX to R2
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-crx-r2-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI-tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Derive monotonically increasing Chrome version
+        id: version
+        env:
+          CI_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+        run: |
+          BASE_VERSION="$(node -p "require('./manifest.json').version")"
+          if [ "$CI_RUN_NUMBER" -gt 65535 ]; then
+            echo "CI run number exceeds Chrome version component limit" >&2
+            exit 1
+          fi
+          DEPLOY_VERSION="${BASE_VERSION}.${CI_RUN_NUMBER}"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = 'manifest.json';
+          const manifest = JSON.parse(readFileSync(path, 'utf8'));
+          const run = process.env.CI_RUN_NUMBER;
+          manifest.version_name = `${manifest.version} (main CI #${run})`;
+          manifest.version = `${manifest.version}.${run}`;
+          writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          echo "version=$DEPLOY_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build extension
+        run: pnpm build
+
+      - name: Package ZIP
+        run: pnpm release:zip
+
+      - name: Prepare CRX signing key
+        env:
+          CRX_PRIVATE_KEY_PEM: ${{ secrets.CRX_PRIVATE_KEY_PEM }}
+        run: |
+          test -n "$CRX_PRIVATE_KEY_PEM"
+          umask 077
+          printf '%s' "$CRX_PRIVATE_KEY_PEM" > "$RUNNER_TEMP/crx-private-key.pem"
+
+      - name: Package CRX3
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pnpm dlx crx3@2.0.0 \
+            -p "$RUNNER_TEMP/crx-private-key.pem" \
+            -o "website/public/releases/sse-devtools-panel-v${VERSION}.crx" \
+            dist
+
+      - name: Generate Chrome update manifest and checksums
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cat > updates.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+            <app appid="nfjookppbhgokbnbkoheaonagebodohm">
+              <updatecheck codebase="https://crx.fyzure.fyi/sse-devtools-panel/latest.crx" version="${VERSION}" />
+            </app>
+          </gupdate>
+          EOF
+          sha256sum \
+            "website/public/releases/sse-devtools-panel-v${VERSION}.crx" \
+            "website/public/releases/sse-devtools-panel-v${VERSION}.zip" \
+            > SHA256SUMS.txt
+
+      - name: Upload tested build to R2
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          R2_DEPLOY_URL: ${{ vars.R2_DEPLOY_URL }}
+          R2_DEPLOY_KEY: ${{ secrets.R2_DEPLOY_KEY }}
+        run: |
+          test -n "$R2_DEPLOY_URL"
+          test -n "$R2_DEPLOY_KEY"
+          upload() {
+            local source="$1" target="$2" type="$3" cache="$4"
+            curl --fail --silent --show-error --retry 4 --retry-all-errors \
+              -X PUT "$R2_DEPLOY_URL/sse-devtools-panel/$target" \
+              -H "Authorization: Bearer $R2_DEPLOY_KEY" \
+              -H "Content-Type: $type" \
+              -H "X-Object-Cache-Control: $cache" \
+              --data-binary "@$source"
+          }
+          CRX="website/public/releases/sse-devtools-panel-v${VERSION}.crx"
+          ZIP="website/public/releases/sse-devtools-panel-v${VERSION}.zip"
+          upload "$CRX" "sse-devtools-panel-v${VERSION}.crx" "application/x-chrome-extension" "public, max-age=31536000, immutable"
+          upload "$ZIP" "sse-devtools-panel-v${VERSION}.zip" "application/zip" "public, max-age=31536000, immutable"
+          upload "$CRX" "latest.crx" "application/x-chrome-extension" "no-cache, no-store, must-revalidate"
+          upload "$ZIP" "latest.zip" "application/zip" "no-cache, no-store, must-revalidate"
+          upload "updates.xml" "updates.xml" "application/xml; charset=utf-8" "no-cache, no-store, must-revalidate"
+          upload "SHA256SUMS.txt" "SHA256SUMS.txt" "text/plain; charset=utf-8" "no-cache, no-store, must-revalidate"
+
+      - name: Verify public R2 endpoint
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for attempt in $(seq 1 12); do
+            if curl -fsS --retry 2 "https://crx.fyzure.fyi/sse-devtools-panel/updates.xml" | grep -F "version=\"${VERSION}\""; then
+              curl -fsSI "https://crx.fyzure.fyi/sse-devtools-panel/latest.crx" | grep -Ei '^(content-type|cache-control|content-length):'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "R2 custom domain did not serve the new version in time" >&2
+          exit 1

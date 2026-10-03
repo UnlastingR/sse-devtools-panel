@@ -1,0 +1,12 @@
+name = "crx-r2-deploy"
+main = "worker.mjs"
+compatibility_date = "2026-10-03"
+workers_dev = false
+
+routes = [
+  { pattern = "crx-upload.fyzure.fyi", custom_domain = true }
+]
+
+[[r2_buckets]]
+binding = "CRX_BUCKET"
+bucket_name = "fyzure-crx"
