@@ -473,7 +473,20 @@ function connectorPathIdentity(text: string): {
 }
 
 function builtinProvider(provider: string | undefined): boolean {
-  return provider === "files" || provider === "python";
+  return provider === "files" || provider === "python" || provider === "container";
+}
+
+function directBuiltinIdentity(
+  tool: ChatgptMessage,
+): Pick<AiToolCall, "provider" | "kind" | "operation"> | null {
+  if (tool.recipient?.startsWith("container.")) {
+    return {
+      provider: "container",
+      kind: "builtin",
+      operation: tool.recipient.slice("container.".length) || undefined,
+    };
+  }
+  return null;
 }
 
 function recallToolIdentity(
@@ -612,6 +625,9 @@ function toolIdentity(
   tool: ChatgptMessage,
   state: ChatgptWebMergeState,
 ): Pick<AiToolCall, "provider" | "kind" | "source" | "operation"> {
+  const directBuiltin = directBuiltinIdentity(tool);
+  if (directBuiltin) return directBuiltin;
+
   const recallIdentity = recallToolIdentity(tool, state);
   if (recallIdentity) return recallIdentity;
 

@@ -114,6 +114,47 @@ describe("ai-merge", () => {
           }),
           "delta",
         ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "container-result",
+                author: { role: "tool", name: "container.exec" },
+                content: { content_type: "execution_output", text: "container-exec-sse-probe\n" },
+                metadata: { parent_id: "container-call" },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "container-summary",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "执行容器连通性探测", content: "", finished: true }],
+                },
+                metadata: {
+                  inline_cot_expandable_content: {
+                    source_message_ids: ["container-call", "container-result"],
+                  },
+                  tool_summary_type: "container",
+                  parent_id: "container-result",
+                },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
       ];
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       const stages = t.channels.reasoningStages ?? [];
@@ -752,6 +793,38 @@ describe("ai-merge", () => {
       assert(t.channels.tools[0]?.operation === "find", "files operation restored");
       assert(t.channels.tools[1]?.provider === "python", "python provider restored");
       assert(t.channels.tools[1]?.kind === "builtin", "python classified as builtin");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "container-call",
+                author: { role: "assistant" },
+                content: { content_type: "code", text: '{"cmd":["git","status"]}' },
+                metadata: {},
+                recipient: "container.exec",
+                channel: "analysis",
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `container tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.name === "container.exec", "raw container recipient preserved");
+      assert(t.channels.tools[0]?.provider === "container", "container provider normalized");
+      assert(t.channels.tools[0]?.kind === "builtin", "container classified as builtin");
+      assert(t.channels.tools[0]?.operation === "exec", "container operation extracted");
+      assert(
+        t.channels.reasoning.includes("工具 · container · BUILTIN · exec"),
+        "container gets builtin reasoning label",
+      );
     }
 
     {
