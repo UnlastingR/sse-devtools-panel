@@ -136,6 +136,185 @@ describe("ai-merge", () => {
         ev("v1", "delta_encoding"),
         ev(
           JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "devspace-wrapper",
+                author: { role: "assistant" },
+                create_time: 201,
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  is_visually_hidden_from_conversation: true,
+                  reasoning_title: "打开工作区",
+                  reasoning_start_time: 200,
+                },
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "devspace-call",
+                author: { role: "assistant" },
+                create_time: 202,
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({
+                    path: "/Devspace/link-test/open_workspace",
+                    args: { path: "/root/codex/project", mode: "checkout" },
+                  }),
+                },
+                metadata: {
+                  parent_id: "devspace-wrapper",
+                  connector_tool_payload: JSON.stringify({
+                    path: "/root/codex/project",
+                    mode: "checkout",
+                  }),
+                  chatgpt_sdk: {
+                    resource_name: "Devspace_open_workspace",
+                    html_asset_pointer: "ui://devspace/workspace-app/v2.html",
+                    action_name: "open_workspace",
+                  },
+                },
+                recipient: "api_tool.call_tool",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "devspace-result",
+                author: { role: "tool", name: "api_tool.call_tool" },
+                create_time: 203,
+                content: { content_type: "code", text: "{}" },
+                metadata: {
+                  parent_id: "devspace-call",
+                  invoked_resource: {
+                    resource_uri: "/asdk_app/link/open_workspace",
+                    contains_mcp_source: true,
+                    app_name: "Devspace",
+                  },
+                },
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "final-widget",
+                author: { role: "assistant" },
+                create_time: 204,
+                content: { content_type: "text", parts: ["widget"] },
+                metadata: {
+                  parent_id: "devspace-result",
+                  content_references: [],
+                },
+                recipient: "all",
+                channel: "final",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            p: "/message/metadata/content_references",
+            o: "append",
+            v: [
+              {
+                matched_text: '\uE200genui\uE202{"chart":{',
+                type: "hidden",
+                invalid: true,
+              },
+            ],
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            p: "",
+            o: "patch",
+            v: [
+              {
+                p: "/message/metadata/content_references/0/type",
+                o: "replace",
+                v: "client_defined_widget",
+              },
+              {
+                p: "/message/metadata/content_references/0/invalid",
+                o: "remove",
+              },
+              {
+                p: "/message/metadata/content_references/0",
+                o: "append",
+                v: {
+                  category: "visualization",
+                  data: {
+                    widget_type: "charts_widget_v2",
+                    language: "recharts-json",
+                    content: { chartType: "bar" },
+                  },
+                },
+              },
+            ],
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 2, "APP UI tool plus client widget are both listed");
+      const appUi = t.channels.tools[0];
+      assert(appUi?.provider === "Devspace", "Devspace provider preserved");
+      assert(appUi?.kind === "app" && appUi?.source === "mcp", "Devspace remains APP MCP");
+      assert(appUi?.presentation === "app_ui", "Devspace UI card is marked as APP UI");
+      assert(
+        appUi?.uiResource === "ui://devspace/workspace-app/v2.html",
+        "Devspace UI resource preserved",
+      );
+      const widget = t.channels.tools[1];
+      assert(widget?.provider === "chart" && widget?.kind === "widget", "chart widget detected");
+      assert(widget?.widgetCategory === "visualization", "widget category preserved");
+      assert(widget?.widgetType === "charts_widget_v2", "widget implementation preserved");
+      assert(widget?.presentation === "client_widget", "client widget presentation preserved");
+      const reasoningTools = (t.channels.reasoningStages ?? []).flatMap((stage) =>
+        stage.items.filter((item) => item.kind === "tool"),
+      );
+      assert(
+        reasoningTools.some(
+          (item) => item.toolId === appUi?.id && item.text.includes("APP · MCP · UI"),
+        ),
+        "APP UI card is linked from reasoning",
+      );
+      assert(
+        reasoningTools.some(
+          (item) => item.toolId === widget?.id && item.text.includes("WIDGET · VISUALIZATION"),
+        ),
+        "client widget is linked from reasoning",
+      );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
             v: {
               message: {
                 id: "hidden-progress",

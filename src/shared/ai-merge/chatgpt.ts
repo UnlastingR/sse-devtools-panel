@@ -132,20 +132,77 @@ function joinPointer(base: string, child: string): string {
   return `${base}/${child}`;
 }
 
-function setMetadataPath(target: Record<string, unknown>, path: string, value: unknown): void {
-  const parts = path
+function metadataPathParts(path: string): string[] {
+  return path
     .split("/")
     .filter(Boolean)
     .map((p) => p.replace(/~1/g, "/").replace(/~0/g, "~"));
-  let cur: Record<string, unknown> = target;
+}
+
+function isArrayIndex(part: string | undefined): boolean {
+  return Boolean(part && /^\d+$/.test(part));
+}
+
+function applyMetadataPath(
+  target: Record<string, unknown>,
+  path: string,
+  op: string,
+  value: unknown,
+): void {
+  const parts = metadataPathParts(path);
+  if (parts.length === 0) return;
+
+  let cur: Record<string, unknown> | unknown[] = target;
   for (let i = 0; i < parts.length - 1; i++) {
     const key = parts[i]!;
-    const next = cur[key];
-    if (!isRecord(next)) cur[key] = {};
-    cur = cur[key] as Record<string, unknown>;
+    const nextKey = parts[i + 1];
+    const existing = Array.isArray(cur) ? cur[Number(key)] : cur[key];
+    if (isRecord(existing) || Array.isArray(existing)) {
+      cur = existing;
+      continue;
+    }
+    const created: Record<string, unknown> | unknown[] = isArrayIndex(nextKey) ? [] : {};
+    if (Array.isArray(cur)) cur[Number(key)] = created;
+    else cur[key] = created;
+    cur = created;
   }
+
   const last = parts.at(-1);
-  if (last) cur[last] = value;
+  if (!last) return;
+  const getCurrent = () => (Array.isArray(cur) ? cur[Number(last)] : cur[last]);
+  const setCurrent = (next: unknown) => {
+    if (Array.isArray(cur)) cur[Number(last)] = next;
+    else cur[last] = next;
+  };
+
+  if (op === "remove") {
+    if (Array.isArray(cur)) cur.splice(Number(last), 1);
+    else delete cur[last];
+    return;
+  }
+
+  if (op === "append") {
+    const existing = getCurrent();
+    if (typeof existing === "string" && typeof value === "string") {
+      setCurrent(existing + value);
+      return;
+    }
+    if (Array.isArray(existing)) {
+      if (Array.isArray(value)) existing.push(...value);
+      else existing.push(value);
+      return;
+    }
+    if (isRecord(existing) && isRecord(value)) {
+      Object.assign(existing, value);
+      return;
+    }
+    if (existing === undefined) {
+      setCurrent(value);
+      return;
+    }
+  }
+
+  setCurrent(value);
 }
 
 function applyMessagePatch(
@@ -201,8 +258,11 @@ function applyMessagePatch(
     return;
   }
   const metadataPrefix = "/message/metadata/";
-  if (path.startsWith(metadataPrefix) && (op === "add" || op === "replace" || op === "append")) {
-    setMetadataPath(msg.metadata, path.slice(metadataPrefix.length), value);
+  if (
+    path.startsWith(metadataPrefix) &&
+    (op === "add" || op === "replace" || op === "append" || op === "remove")
+  ) {
+    applyMetadataPath(msg.metadata, path.slice(metadataPrefix.length), op, value);
     if (path === "/message/metadata/thinking_effort" && typeof value === "string") {
       state.endMeta.thinkingEffort = value;
     }
@@ -428,6 +488,78 @@ function knownMcpProvider(state: ChatgptWebMergeState, provider: string | undefi
   return false;
 }
 
+function toolUiDetails(
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): Pick<AiToolCall, "presentation" | "uiResource"> {
+  const candidates: ChatgptMessage[] = [tool];
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    candidates.push(msg);
+  }
+
+  for (const msg of candidates) {
+    const sdk = isRecord(msg.metadata.chatgpt_sdk) ? msg.metadata.chatgpt_sdk : null;
+    const pointer = sdk && typeof sdk.html_asset_pointer === "string" ? sdk.html_asset_pointer : "";
+    if (pointer) return { presentation: "app_ui", uiResource: pointer };
+  }
+  return {};
+}
+
+type ClientWidget = {
+  id: string;
+  name: string;
+  category?: string;
+  widgetType?: string;
+  arguments: string;
+};
+
+function clientWidgetName(ref: Record<string, unknown>, data: Record<string, unknown>): string {
+  const matched = typeof ref.matched_text === "string" ? ref.matched_text : "";
+  const fromMarker = matched.match(/\uE200genui\uE202\{\"?([A-Za-z0-9_:-]+)\"?\s*:/)?.[1];
+  if (fromMarker) return fromMarker;
+
+  const widgetType = typeof data.widget_type === "string" ? data.widget_type : "";
+  const category = typeof ref.category === "string" ? ref.category : "";
+  if (widgetType === "charts_widget_v2" || category === "visualization") return "chart";
+  if (widgetType === "app_block" || category === "app_block") return "app_block";
+  if (category === "map") return "map_widget";
+  return category ? `${category}_widget` : "widget";
+}
+
+function clientWidgetsFromMessage(msg: ChatgptMessage): ClientWidget[] {
+  const refs = msg.metadata.content_references;
+  if (!Array.isArray(refs)) return [];
+  const out: ClientWidget[] = [];
+  refs.forEach((value, index) => {
+    if (!isRecord(value) || value.type !== "client_defined_widget") return;
+    const data = isRecord(value.data) ? value.data : {};
+    const category = typeof value.category === "string" ? value.category : undefined;
+    const widgetType = typeof data.widget_type === "string" ? data.widget_type : undefined;
+    const name = clientWidgetName(value, data);
+    let args = "{}";
+    try {
+      args = JSON.stringify({ category, widget_type: widgetType, data });
+    } catch {
+      // Keep a valid empty payload if an unexpected host object is not serializable.
+    }
+    out.push({
+      id: `${msg.id}:widget:${index}`,
+      name,
+      category,
+      widgetType,
+      arguments: args,
+    });
+  });
+  return out;
+}
+
+function clientWidgetLabel(widget: ClientWidget): string {
+  const category = widget.category ? ` · ${widget.category.toUpperCase()}` : "";
+  return `${widget.name} · WIDGET${category}`;
+}
+
 function toolIdentity(
   tool: ChatgptMessage,
   state: ChatgptWebMergeState,
@@ -560,11 +692,13 @@ function toolContextLabel(tool: ChatgptMessage, state: ChatgptWebMergeState): st
   if (tool.recipient === "web.run") return "web.run · SEARCH";
   if (tool.recipient === "python") return "python · BUILTIN";
   const identity = toolIdentity(tool, state);
+  const ui = toolUiDetails(tool, state);
   const provider = identity.provider ?? tool.recipient ?? "tool";
   const kind = identity.kind ? ` · ${identity.kind.toUpperCase()}` : "";
   const source = identity.source ? ` · ${identity.source.toUpperCase()}` : "";
+  const presentation = ui.presentation === "app_ui" ? " · UI" : "";
   const operation = identity.operation ? ` · ${identity.operation}` : "";
-  return `${provider}${kind}${source}${operation}`;
+  return `${provider}${kind}${source}${presentation}${operation}`;
 }
 
 function logicalToolStageTitle(tool: ChatgptMessage, state: ChatgptWebMergeState): string {
@@ -688,6 +822,19 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       continue;
     }
 
+    const widgets = clientWidgetsFromMessage(msg);
+    if (widgets.length > 0) {
+      const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
+      for (const widget of widgets) {
+        stage.items.push({
+          kind: "tool",
+          text: clientWidgetLabel(widget),
+          elapsedSec: reasoningElapsedSec(msg, start),
+          toolId: widget.id,
+        });
+      }
+    }
+
     if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
 
     if (msg.role !== "assistant") continue;
@@ -754,39 +901,65 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
   for (const id of state.order) {
     const msg = state.messages.get(id);
     if (!msg || msg.role !== "assistant") continue;
-    if (!msg.recipient || msg.recipient === "all") continue;
-    if (msg.recipient === "api_tool.call_tool" && logicalToolParent(msg, state)) continue;
 
-    let args = connectorPayloadForTool(msg, state);
-    let identity = toolIdentity(msg, state);
-    if (msg.recipient === "web.run") {
-      identity = { provider: "web.run", kind: "search" };
-    } else if (msg.recipient === "python") {
-      identity = { provider: "python", kind: "builtin" };
-    }
-    const isEmptyHiddenWrapper =
-      msg.metadata.is_visually_hidden_from_conversation === true &&
-      msg.recipient === "functions.exec" &&
-      !identity.provider &&
-      !identity.operation &&
-      (!args || args === "{}");
-    if (isEmptyHiddenWrapper) continue;
-    if (!identity.kind && msg.recipient === "functions.exec") {
-      identity = { ...identity, provider: identity.provider ?? "functions.exec", kind: "builtin" };
-    }
-    if (msg.recipient === "web.run") {
-      const search = searchDetailsForTool(msg, state);
-      if (search.queries.length > 0 || search.results.length > 0) {
-        args = JSON.stringify({ type: "SEARCH", queries: search.queries, results: search.results });
+    if (msg.recipient && msg.recipient !== "all") {
+      if (!(msg.recipient === "api_tool.call_tool" && logicalToolParent(msg, state))) {
+        let args = connectorPayloadForTool(msg, state);
+        let identity = toolIdentity(msg, state);
+        if (msg.recipient === "web.run") {
+          identity = { provider: "web.run", kind: "search" };
+        } else if (msg.recipient === "python") {
+          identity = { provider: "python", kind: "builtin" };
+        }
+        const isEmptyHiddenWrapper =
+          msg.metadata.is_visually_hidden_from_conversation === true &&
+          msg.recipient === "functions.exec" &&
+          !identity.provider &&
+          !identity.operation &&
+          (!args || args === "{}");
+        if (!isEmptyHiddenWrapper) {
+          if (!identity.kind && msg.recipient === "functions.exec") {
+            identity = {
+              ...identity,
+              provider: identity.provider ?? "functions.exec",
+              kind: "builtin",
+            };
+          }
+          if (msg.recipient === "web.run") {
+            const search = searchDetailsForTool(msg, state);
+            if (search.queries.length > 0 || search.results.length > 0) {
+              args = JSON.stringify({
+                type: "SEARCH",
+                queries: search.queries,
+                results: search.results,
+              });
+            }
+          }
+          out.push({
+            index: out.length,
+            id: msg.id,
+            name: msg.recipient,
+            ...identity,
+            ...toolUiDetails(msg, state),
+            arguments: args || "{}",
+          });
+        }
       }
     }
-    out.push({
-      index: out.length,
-      id: msg.id,
-      name: msg.recipient,
-      ...identity,
-      arguments: args || "{}",
-    });
+
+    for (const widget of clientWidgetsFromMessage(msg)) {
+      out.push({
+        index: out.length,
+        id: widget.id,
+        name: widget.name,
+        provider: widget.name,
+        kind: "widget",
+        presentation: "client_widget",
+        widgetCategory: widget.category,
+        widgetType: widget.widgetType,
+        arguments: widget.arguments,
+      });
+    }
   }
   return out;
 }

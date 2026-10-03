@@ -173,6 +173,12 @@
   "conversationToolsFunction": {
     "message": "Function"
   },
+  "conversationToolsUiResource": {
+    "message": "UI resource"
+  },
+  "conversationToolsWidgetType": {
+    "message": "Widget type"
+  },
   "conversationToolsWebSearch": {
     "message": "Web search"
   },

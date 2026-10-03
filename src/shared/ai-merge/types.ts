@@ -7,11 +7,19 @@ export interface AiToolCall {
   /** User-facing integration/tool name when the transport exposes it. */
   provider?: string;
   /** Product-level tool class. MCP is an APP source, not a peer type. */
-  kind?: "app" | "builtin" | "search";
+  kind?: "app" | "builtin" | "search" | "widget";
   /** Optional implementation/source detail for an APP. */
   source?: "mcp";
   /** Concrete operation within the provider, e.g. read/apply_patch/exec_command. */
   operation?: string;
+  /** Rich UI attached to a tool call or represented as a client-defined widget. */
+  presentation?: "app_ui" | "client_widget";
+  /** APP SDK ui:// resource for APP-owned cards. */
+  uiResource?: string;
+  /** Client-defined widget category such as map/visualization/app_block. */
+  widgetCategory?: string;
+  /** More specific widget implementation identifier when exposed by the stream. */
+  widgetType?: string;
   arguments: string;
 }
 

@@ -212,7 +212,7 @@ function toolsFingerprint(merged: AiConversation): string {
   return merged.channels.tools
     .map(
       (tc) =>
-        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.kind ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
+        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.kind ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.presentation ?? ""}:${tc.uiResource ?? ""}:${tc.widgetCategory ?? ""}:${tc.widgetType ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
     )
     .join("|");
 }
@@ -224,7 +224,7 @@ function reasoningFingerprint(merged: AiConversation): string {
     ...stages.map(
       (stage) =>
         `${stage.id}:${stage.title}:${stage.elapsedSec ?? ""}:${stage.items
-          .map((item) => `${item.kind}:${item.elapsedSec ?? ""}:${item.text}`)
+          .map((item) => `${item.kind}:${item.elapsedSec ?? ""}:${item.toolId ?? ""}:${item.text}`)
           .join("~")}`,
     ),
   ].join("|");
@@ -413,7 +413,12 @@ function toolDisplayName(tc: AiConversation["channels"]["tools"][number]): strin
   const provider = tc.provider || tc.name || t("conversationToolsFunction");
   if (tc.kind === "search") return `${provider} · SEARCH`;
   if (tc.kind === "builtin") return `${provider} · BUILTIN`;
-  if (tc.kind === "app") return `${provider} · APP${tc.source === "mcp" ? " · MCP" : ""}`;
+  if (tc.kind === "widget") {
+    return `${provider} · WIDGET${tc.widgetCategory ? ` · ${tc.widgetCategory.toUpperCase()}` : ""}`;
+  }
+  if (tc.kind === "app") {
+    return `${provider} · APP${tc.source === "mcp" ? " · MCP" : ""}${tc.presentation === "app_ui" ? " · UI" : ""}`;
+  }
   return provider;
 }
 
@@ -649,6 +654,30 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
         nameVal.textContent = [toolDisplayName(tc), tc.operation].filter(Boolean).join(" · ");
         nameRow.append(nameLabel, nameVal);
         body.appendChild(nameRow);
+      }
+      if (tc.presentation === "app_ui" && tc.uiResource) {
+        const uiRow = document.createElement("div");
+        uiRow.className = "tool-card-section";
+        const uiLabel = document.createElement("div");
+        uiLabel.className = "tool-card-label";
+        uiLabel.textContent = t("conversationToolsUiResource");
+        const uiVal = document.createElement("code");
+        uiVal.className = "tool-fn-name";
+        uiVal.textContent = tc.uiResource;
+        uiRow.append(uiLabel, uiVal);
+        body.appendChild(uiRow);
+      }
+      if (tc.kind === "widget" && tc.widgetType) {
+        const widgetRow = document.createElement("div");
+        widgetRow.className = "tool-card-section";
+        const widgetLabel = document.createElement("div");
+        widgetLabel.className = "tool-card-label";
+        widgetLabel.textContent = t("conversationToolsWidgetType");
+        const widgetVal = document.createElement("code");
+        widgetVal.className = "tool-fn-name";
+        widgetVal.textContent = tc.widgetType;
+        widgetRow.append(widgetLabel, widgetVal);
+        body.appendChild(widgetRow);
       }
       const argsSection = document.createElement("div");
       argsSection.className = "tool-card-section";

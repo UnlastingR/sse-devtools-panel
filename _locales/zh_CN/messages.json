@@ -173,6 +173,12 @@
   "conversationToolsFunction": {
     "message": "函数"
   },
+  "conversationToolsUiResource": {
+    "message": "UI 资源"
+  },
+  "conversationToolsWidgetType": {
+    "message": "组件类型"
+  },
   "conversationToolsWebSearch": {
     "message": "网页搜索"
   },
