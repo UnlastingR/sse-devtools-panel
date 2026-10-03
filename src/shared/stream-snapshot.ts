@@ -101,7 +101,9 @@ export function buildStreamExportPayload(record: StreamRecord): StreamExportPayl
 }
 
 function isTransport(value: unknown): value is StreamTransport {
-  return value === "fetch" || value === "eventsource" || value === "xhr";
+  return (
+    value === "fetch" || value === "eventsource" || value === "xhr" || value === "websocket"
+  );
 }
 
 function isStreamKind(value: unknown): value is StreamKind {

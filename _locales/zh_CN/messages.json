@@ -50,6 +50,9 @@
   "transportXhr": {
     "message": "XHR"
   },
+  "transportWebSocket": {
+    "message": "WebSocket"
+  },
   "noStreamsMatchFilter": {
     "message": "当前过滤条件下没有匹配的数据流"
   },
@@ -60,7 +63,7 @@
     "message": "…"
   },
   "emptyHintGuide": {
-    "message": "在本标签页发起 SSE/NDJSON 请求，或导入 JSON 捕获文件。"
+    "message": "在本标签页发起 SSE、NDJSON 或受支持的 WebSocket 数据流，或导入 JSON 捕获文件。"
   },
   "tabEvents": {
     "message": "事件"
@@ -971,7 +974,7 @@
     "message": "更多分析操作"
   },
   "sidebarFooter": {
-    "message": "捕获 Fetch · EventSource · XHR · NDJSON"
+    "message": "捕获 Fetch · EventSource · XHR · WebSocket · NDJSON"
   },
   "sidebarResizeTitle": {
     "message": "拖动调整侧边栏宽度"

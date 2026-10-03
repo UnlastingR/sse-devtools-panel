@@ -235,6 +235,11 @@ select {
   border-color: var(--badge-eventsource-border);
 }
 
+.badge.websocket {
+  color: var(--badge-eventsource-fg);
+  border-color: var(--badge-eventsource-border);
+}
+
 .badge.warn,
 .badge.abort,
 .badge.streaming {

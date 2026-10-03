@@ -141,6 +141,8 @@ export function transportLabel(transport: StreamTransport): string {
       return t("transportEventSource");
     case "xhr":
       return t("transportXhr");
+    case "websocket":
+      return t("transportWebSocket");
     default:
       return transport;
   }

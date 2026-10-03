@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { chatgptTurnIdentity, combineChatgptTurnRecords } from "../chatgpt-logical-turn";
+import {
+  chatgptTurnIdentity,
+  chatgptTurnKey,
+  combineChatgptTurnRecords,
+} from "../chatgpt-logical-turn";
 import type { SseEvent, StreamRecord } from "../types";
 
 function event(data: unknown, index = 0): SseEvent {
@@ -16,13 +20,15 @@ function record(
   requestId: string,
   startedAt: number,
   events: SseEvent[],
-  options: Partial<Pick<StreamRecord, "url" | "streamStatus" | "errorMessage" | "endedAt">> = {},
+  options: Partial<
+    Pick<StreamRecord, "url" | "transport" | "streamStatus" | "errorMessage" | "endedAt">
+  > = {},
 ): StreamRecord {
   return {
     requestId,
     url: options.url ?? "https://chatgpt.com/backend-api/f/conversation",
     method: "POST",
-    transport: "fetch",
+    transport: options.transport ?? "fetch",
     streamKind: "sse",
     startedAt,
     streamStatus: options.streamStatus ?? "done",
@@ -97,5 +103,24 @@ describe("ChatGPT logical turn grouping", () => {
     expect(merged.streamStatus).toBe("done");
     expect(merged.errorMessage).toBeUndefined();
     expect(merged.events).toEqual([first, resumed]);
+  });
+
+  it("recognizes ChatGPT Work WebSocket turn streams", () => {
+    const wsEvent = event({
+      v: { message: { metadata: { working_turn_id: "work" } } },
+      conversation_id: "conv",
+    });
+    const ws = record("ws", 1, [wsEvent], {
+      url: "wss://ws.chatgpt.com/p21/ws/user/user-example#conversation-turn-example",
+      transport: "websocket",
+    });
+
+    expect(chatgptTurnKey(ws)).toBe("conv:work");
+    const merged = combineChatgptTurnRecords(ws, [ws]);
+    expect(merged).toBe(ws);
+    expect(chatgptTurnIdentity(ws.events)).toEqual({
+      conversationId: "conv",
+      workingTurnId: "work",
+    });
   });
 });

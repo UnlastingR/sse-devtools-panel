@@ -1,6 +1,7 @@
 import { MESSAGE_SOURCE, type PageToExtensionMessage } from "../shared/types";
 import { patchEventSource } from "./inject/patch-eventsource";
 import { patchFetch } from "./inject/patch-fetch";
+import { patchWebSocket } from "./inject/patch-websocket";
 import { patchXhr } from "./inject/patch-xhr";
 import type {
   PostChunk,
@@ -48,4 +49,5 @@ function install(): void {
   patchFetch(nextId, postStart, postChunk, postEnd, postError, postDiscard);
   patchEventSource(nextId, postStart, postChunk, postEnd, postError, postReconnect);
   patchXhr(nextId, postStart, postChunk, postEnd, postError, postDiscard);
+  patchWebSocket(nextId, postStart, postChunk, postEnd, postError);
 }

@@ -50,6 +50,9 @@
   "transportXhr": {
     "message": "XHR"
   },
+  "transportWebSocket": {
+    "message": "WebSocket"
+  },
   "noStreamsMatchFilter": {
     "message": "No streams match current filters"
   },
@@ -60,7 +63,7 @@
     "message": "…"
   },
   "emptyHintGuide": {
-    "message": "Trigger SSE or NDJSON in this tab, or import a JSON capture."
+    "message": "Trigger SSE, NDJSON, or a supported WebSocket stream in this tab, or import a JSON capture."
   },
   "tabEvents": {
     "message": "Events"
@@ -971,7 +974,7 @@
     "message": "More analysis actions"
   },
   "sidebarFooter": {
-    "message": "Captures Fetch · EventSource · XHR · NDJSON"
+    "message": "Captures Fetch · EventSource · XHR · WebSocket · NDJSON"
   },
   "sidebarResizeTitle": {
     "message": "Drag to resize sidebar"

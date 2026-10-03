@@ -6,7 +6,7 @@ export const PANEL_PORT = "eventstream-panel" as const;
 export type StreamStatus = "streaming" | "done" | "error";
 
 /** How the page opened the streaming request. */
-export type StreamTransport = "fetch" | "eventsource" | "xhr";
+export type StreamTransport = "fetch" | "eventsource" | "xhr" | "websocket";
 
 /** Wire format of the response body. */
 export type StreamKind = "sse" | "ndjson" | "connect-json";

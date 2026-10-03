@@ -160,19 +160,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** ChatGPT Web conversation streams, including transport resume after interruption. */
+/** ChatGPT Web conversation streams, including HTTP resume and Work WS topic streams. */
 export function isChatgptConversationUrl(url: string | undefined): boolean {
   if (!url) return false;
   try {
     const parsed = new URL(url, "https://dummy.local");
     const host = parsed.hostname.toLowerCase();
     return (
-      (host === "chatgpt.com" || host.endsWith(".chatgpt.com")) &&
-      (parsed.pathname === "/backend-api/f/conversation" ||
-        parsed.pathname === "/backend-api/f/conversation/resume")
+      ((host === "chatgpt.com" || host.endsWith(".chatgpt.com")) &&
+        (parsed.pathname === "/backend-api/f/conversation" ||
+          parsed.pathname === "/backend-api/f/conversation/resume")) ||
+      (parsed.protocol === "wss:" &&
+        host === "ws.chatgpt.com" &&
+        /\/ws\/user\//.test(parsed.pathname))
     );
   } catch {
-    return /chatgpt\.com\/backend-api\/f\/conversation(?:\/resume)?(?:[?#]|$)/i.test(url);
+    return (
+      /chatgpt\.com\/backend-api\/f\/conversation(?:\/resume)?(?:[?#]|$)/i.test(url) ||
+      /^wss:\/\/ws\.chatgpt\.com\/.*\/ws\/user\//i.test(url)
+    );
   }
 }
 

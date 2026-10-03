@@ -101,7 +101,10 @@ export function renderList(): void {
     if (li.dataset.fingerprint !== fingerprint) {
       li.dataset.fingerprint = fingerprint;
       const transportClass =
-        s.transport === "fetch" || s.transport === "xhr" || s.transport === "eventsource"
+        s.transport === "fetch" ||
+        s.transport === "xhr" ||
+        s.transport === "eventsource" ||
+        s.transport === "websocket"
           ? s.transport
           : "";
       const tip = escapeHtml(streamTimeTooltip(s));
