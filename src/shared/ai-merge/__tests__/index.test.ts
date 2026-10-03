@@ -880,7 +880,10 @@ describe("ai-merge", () => {
         ),
         "recall summary stays in recall stage",
       );
-      assert(t.channels.reasoningStages?.[1]?.title === "", "post-recall work starts a fresh stage");
+      assert(
+        t.channels.reasoningStages?.[1]?.title === "",
+        "post-recall work starts a fresh stage",
+      );
       assert(
         t.channels.reasoningStages?.[1]?.items.some(
           (item) => item.kind === "commentary" && item.text.includes("继续验证 SSE"),
