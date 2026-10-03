@@ -108,7 +108,10 @@ describe("ai-merge", () => {
                 id: "final",
                 author: { role: "assistant" },
                 content: { content_type: "text", parts: ["`a"] },
-                metadata: { resolved_model_slug: "gpt-5-6-thinking" },
+                metadata: {
+                  resolved_model_slug: "gpt-5-6-thinking",
+                  thinking_effort: "extended",
+                },
                 recipient: "all",
                 channel: "final",
               },
@@ -149,6 +152,7 @@ describe("ai-merge", () => {
       assert(t.channels.tools.length === 1, `chatgpt tools: ${t.channels.tools.length}`);
       assert(t.channels.tools[0]?.name === "functions.exec", "chatgpt tool name");
       assert(t.endMeta.model === "gpt-5-6-thinking", "chatgpt model");
+      assert(t.endMeta.thinkingEffort === "extended", "chatgpt thinking effort");
       assert(t.endMeta.finishReason === "stop", "chatgpt finish");
 
       const rich =
@@ -230,6 +234,7 @@ describe("ai-merge", () => {
       assert(t.channels.tools[0]?.name === "functions.exec", "outer logical tool name");
       assert(t.channels.tools[0]?.arguments.includes('"path":"a.ts"'), "connector args merged");
       assert(t.channels.tools[0]?.provider === "Devspace", "connector app name restored");
+      assert(t.channels.tools[0]?.kind === "app", "connector classified as app");
       assert(t.channels.tools[0]?.source === "mcp", "connector source restored");
       assert(t.channels.tools[0]?.operation === "read", "connector operation restored");
     }
@@ -298,7 +303,8 @@ describe("ai-merge", () => {
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       assert(t.channels.tools.length === 1, `zotero tools: ${t.channels.tools.length}`);
       assert(t.channels.tools[0]?.provider === "zotero-mcp", "zotero provider inferred");
-      assert(t.channels.tools[0]?.source === "plugin", "zotero source inferred");
+      assert(t.channels.tools[0]?.kind === "app", "zotero classified as app");
+      assert(t.channels.tools[0]?.source === undefined, "unknown app source stays unknown");
       assert(
         t.channels.tools[0]?.operation === "zotero-mcp_search_library",
         "zotero operation inferred",
@@ -377,10 +383,98 @@ describe("ai-merge", () => {
       ];
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       assert(t.channels.tools.length === 1, `web tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.provider === "web.run", "web provider restored");
+      assert(t.channels.tools[0]?.kind === "search", "web classified as search");
       const args = JSON.parse(t.channels.tools[0]!.arguments);
       assert(args.queries.length === 2, "web queries restored");
       assert(args.results.length === 1, "web results restored");
-      assert(args.results[0].cite_index === "turn1search2", "web result ref restored");
+      assert(args.results[0].cite_index === undefined, "internal web citation id hidden");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "files-wrapper",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {},
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "files-api",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({ path: "/files/find", args: { find: [] } }),
+                },
+                metadata: { parent_id: "files-wrapper", connector_tool_payload: '{"find":[]}' },
+                recipient: "api_tool.call_tool",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "files-result",
+                author: { role: "tool", name: "api_tool.call_tool" },
+                content: { content_type: "code", text: "{}" },
+                metadata: {
+                  parent_id: "files-api",
+                  invoked_resource: {
+                    resource_uri: "/files/find",
+                    contains_mcp_source: false,
+                  },
+                },
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "python-call",
+                author: { role: "assistant" },
+                content: { content_type: "code", text: "sum([1,2,3,4])" },
+                metadata: {},
+                recipient: "python",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 2, `builtin tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.provider === "files", "files provider restored");
+      assert(t.channels.tools[0]?.kind === "builtin", "files classified as builtin");
+      assert(t.channels.tools[0]?.operation === "find", "files operation restored");
+      assert(t.channels.tools[1]?.provider === "python", "python provider restored");
+      assert(t.channels.tools[1]?.kind === "builtin", "python classified as builtin");
     }
 
     {

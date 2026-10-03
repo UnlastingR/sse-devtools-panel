@@ -196,6 +196,7 @@ function buildConversationFingerprint(
     merged.channels.tools.length,
     merged.channels.tools.reduce((n, tc) => n + tc.arguments.length, 0),
     merged.endMeta.finishReason ?? "",
+    merged.endMeta.thinkingEffort ?? "",
     merged.chunkCount,
     channel,
   ].join("|");
@@ -205,20 +206,23 @@ function toolsFingerprint(merged: AiConversation): string {
   return merged.channels.tools
     .map(
       (tc) =>
-        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
+        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.kind ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
     )
     .join("|");
 }
 
 function toolDisplayName(tc: AiConversation["channels"]["tools"][number]): string {
-  if (!tc.provider) return tc.name || t("conversationToolsFunction");
-  const source = tc.source ? ` · ${tc.source.toUpperCase()}` : "";
-  return `${tc.provider}${source}`;
+  const provider = tc.provider || tc.name || t("conversationToolsFunction");
+  if (tc.kind === "search") return `${provider} · SEARCH`;
+  if (tc.kind === "builtin") return `${provider} · BUILTIN`;
+  if (tc.kind === "app") return `${provider} · APP${tc.source === "mcp" ? " · MCP" : ""}`;
+  return provider;
 }
 
 function toolDisplayOperation(tc: AiConversation["channels"]["tools"][number]): string {
-  if (tc.operation && tc.name && tc.operation !== tc.name) return `${tc.operation} · ${tc.name}`;
-  return tc.operation || tc.name || "";
+  if (tc.operation) return tc.operation;
+  if (tc.kind) return "";
+  return tc.name || "";
 }
 
 function conversationChannelText(merged: AiConversation, channel: ConversationChannel): string {
@@ -246,6 +250,9 @@ function conversationChannelText(merged: AiConversation, channel: ConversationCh
       ];
       if (merged.endMeta.model)
         lines.push(`${t("conversationModelLabel")}: ${merged.endMeta.model}`);
+      if (merged.endMeta.thinkingEffort) {
+        lines.push(`${t("conversationThinkingEffortLabel")}: ${merged.endMeta.thinkingEffort}`);
+      }
       if (merged.endMeta.finishReason) {
         lines.push(`${t("conversationFinishLabel")}: ${merged.endMeta.finishReason}`);
       }
@@ -314,7 +321,7 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
     card.className = "tool-card" + (isOpen ? " is-expanded" : " is-collapsed");
     card.dataset.toolIndex = String(index);
     const parsed = tryParseToolArgs(tc.arguments);
-    const isSearch = tc.name === "web_search" || isWebSearchPayload(parsed);
+    const isSearch = tc.kind === "search" || tc.name === "web_search" || isWebSearchPayload(parsed);
 
     const head = document.createElement("button");
     head.type = "button";
@@ -329,7 +336,7 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
 
     const badge = document.createElement("span");
     badge.className = "tool-card-badge";
-    badge.textContent = isSearch ? t("conversationToolsWebSearch") : toolDisplayName(tc);
+    badge.textContent = toolDisplayName(tc);
     head.append(caret, badge);
 
     if (tc.id) {
@@ -393,10 +400,6 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
         if (!r || typeof r !== "object") continue;
         const item = document.createElement("li");
         item.className = "tool-result-item";
-        const cite =
-          typeof r.cite_index === "number" || typeof r.cite_index === "string"
-            ? String(r.cite_index)
-            : "";
         const title = typeof r.title === "string" ? r.title : "Untitled";
         const url = typeof r.url === "string" ? r.url : "";
         const site = typeof r.site_name === "string" ? r.site_name : "";
@@ -404,12 +407,6 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
 
         const titleRow = document.createElement("div");
         titleRow.className = "tool-result-title-row";
-        if (cite) {
-          const citeEl = document.createElement("span");
-          citeEl.className = "tool-result-cite";
-          citeEl.textContent = cite;
-          titleRow.appendChild(citeEl);
-        }
         if (url) {
           const a = document.createElement("a");
           a.className = "tool-result-title";
@@ -451,14 +448,7 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
         nameLabel.textContent = t("conversationToolsFunction");
         const nameVal = document.createElement("code");
         nameVal.className = "tool-fn-name";
-        nameVal.textContent = [
-          tc.provider,
-          tc.source ? `[${tc.source.toUpperCase()}]` : "",
-          tc.operation,
-          tc.name && tc.name !== tc.operation ? `via ${tc.name}` : "",
-        ]
-          .filter(Boolean)
-          .join(" · ");
+        nameVal.textContent = [toolDisplayName(tc), tc.operation].filter(Boolean).join(" · ");
         nameRow.append(nameLabel, nameVal);
         body.appendChild(nameRow);
       }
@@ -691,10 +681,17 @@ export function renderConversation(
     if (conversationChannel === "tools") {
       const tf = toolsFingerprint(merged);
       if (tf !== lastToolsFingerprint) {
+        const prev = existingShell.querySelector<HTMLElement>(".conversation-pane");
+        const scrollTop = prev?.scrollTop ?? 0;
+        const keepBottom = prev
+          ? isNearBottom(prev.scrollTop, prev.scrollHeight, prev.clientHeight)
+          : false;
         const next = createToolsPane(merged, record.requestId);
-        const prev = existingShell.querySelector(".conversation-pane");
         if (prev) prev.replaceWith(next);
         else existingShell.appendChild(next);
+        if (keepBottom) next.scrollTop = next.scrollHeight;
+        else
+          next.scrollTop = Math.min(scrollTop, Math.max(0, next.scrollHeight - next.clientHeight));
         lastToolsFingerprint = tf;
       }
       return;

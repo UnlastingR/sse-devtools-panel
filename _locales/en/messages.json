@@ -116,6 +116,9 @@
   "conversationModelLabel": {
     "message": "Model"
   },
+  "conversationThinkingEffortLabel": {
+    "message": "Thinking effort"
+  },
   "conversationUsageLabel": {
     "message": "Usage"
   },

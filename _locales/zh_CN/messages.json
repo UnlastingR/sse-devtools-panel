@@ -116,6 +116,9 @@
   "conversationModelLabel": {
     "message": "模型"
   },
+  "conversationThinkingEffortLabel": {
+    "message": "思考强度"
+  },
   "conversationUsageLabel": {
     "message": "用量"
   },

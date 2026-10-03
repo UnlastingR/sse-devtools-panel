@@ -110,6 +110,9 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
 
   const model = msg.metadata.resolved_model_slug ?? msg.metadata.model_slug;
   if (typeof model === "string") state.endMeta.model = model;
+  if (typeof msg.metadata.thinking_effort === "string") {
+    state.endMeta.thinkingEffort = msg.metadata.thinking_effort;
+  }
 }
 
 function currentMessage(state: ChatgptWebMergeState): ChatgptMessage | undefined {
@@ -186,11 +189,17 @@ function applyMessagePatch(
     Object.assign(msg.metadata, value);
     const model = msg.metadata.resolved_model_slug ?? msg.metadata.model_slug;
     if (typeof model === "string") state.endMeta.model = model;
+    if (typeof msg.metadata.thinking_effort === "string") {
+      state.endMeta.thinkingEffort = msg.metadata.thinking_effort;
+    }
     return;
   }
   const metadataPrefix = "/message/metadata/";
   if (path.startsWith(metadataPrefix) && (op === "add" || op === "replace" || op === "append")) {
     setMetadataPath(msg.metadata, path.slice(metadataPrefix.length), value);
+    if (path === "/message/metadata/thinking_effort" && typeof value === "string") {
+      state.endMeta.thinkingEffort = value;
+    }
   }
 }
 
@@ -291,19 +300,6 @@ function searchQueriesFromMetadata(metadata: Record<string, unknown>): string[] 
   return bag.queries.filter((q): q is string => typeof q === "string");
 }
 
-function resultRefId(raw: unknown): string | undefined {
-  if (!isRecord(raw)) return undefined;
-  const turn = raw.turn_index;
-  const type = raw.ref_type;
-  const index = raw.ref_index;
-  if ((typeof turn === "number" || typeof turn === "string") && typeof type === "string") {
-    if (typeof index === "number" || typeof index === "string") {
-      return `turn${turn}${type}${index}`;
-    }
-  }
-  return undefined;
-}
-
 function searchResultsFromGroups(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
   const out: Array<Record<string, unknown>> = [];
@@ -327,7 +323,6 @@ function searchResultsFromGroups(value: unknown): Array<Record<string, unknown>>
         url,
         snippet,
         site_name: site,
-        cite_index: resultRefId(entry.ref_id),
       });
     }
   }
@@ -411,10 +406,26 @@ function connectorPathIdentity(text: string): {
   }
 }
 
+function builtinProvider(provider: string | undefined): boolean {
+  return provider === "files" || provider === "python";
+}
+
+function knownMcpProvider(state: ChatgptWebMergeState, provider: string | undefined): boolean {
+  if (!provider) return false;
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    const resource =
+      msg && isRecord(msg.metadata.invoked_resource) ? msg.metadata.invoked_resource : null;
+    if (!resource) continue;
+    if (resource.app_name === provider && resource.contains_mcp_source === true) return true;
+  }
+  return false;
+}
+
 function toolIdentity(
   tool: ChatgptMessage,
   state: ChatgptWebMergeState,
-): Pick<AiToolCall, "provider" | "source" | "operation"> {
+): Pick<AiToolCall, "provider" | "kind" | "source" | "operation"> {
   const candidates: ChatgptMessage[] = [tool];
   for (const id of state.order) {
     const msg = state.messages.get(id);
@@ -428,14 +439,17 @@ function toolIdentity(
   for (const msg of candidates) {
     const resource = isRecord(msg.metadata.invoked_resource) ? msg.metadata.invoked_resource : null;
     if (resource) {
-      const provider =
+      let provider =
         typeof resource.app_name === "string" && resource.app_name.trim()
           ? resource.app_name.trim()
           : undefined;
       const uri = typeof resource.resource_uri === "string" ? resource.resource_uri : "";
+      if (!provider && uri.startsWith("/files/")) provider = "files";
+      const kind: AiToolCall["kind"] = builtinProvider(provider) ? "builtin" : "app";
       return {
         provider,
-        source: resource.contains_mcp_source === true ? "mcp" : "plugin",
+        kind,
+        source: kind === "app" && resource.contains_mcp_source === true ? "mcp" : undefined,
         operation: uri ? resourceOperation(uri) : undefined,
       };
     }
@@ -448,7 +462,7 @@ function toolIdentity(
       const operation = [plugin.operation, plugin.tool_name, plugin.action].find(
         (value): value is string => typeof value === "string" && Boolean(value.trim()),
       );
-      return { provider: provider?.trim(), source: "plugin", operation: operation?.trim() };
+      return { provider: provider?.trim(), kind: "app", operation: operation?.trim() };
     }
   }
 
@@ -456,9 +470,11 @@ function toolIdentity(
     if (msg.role === "assistant" && msg.recipient === "api_tool.call_tool") {
       const path = connectorPathIdentity(msg.text);
       if (path.provider || path.operation) {
+        const kind: AiToolCall["kind"] = builtinProvider(path.provider) ? "builtin" : "app";
         return {
           provider: path.provider,
-          source: "plugin",
+          kind,
+          source: kind === "app" && knownMcpProvider(state, path.provider) ? "mcp" : undefined,
           operation: path.operation,
         };
       }
@@ -521,15 +537,17 @@ function visibleReasoningText(state: ChatgptWebMergeState): string {
         if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
         if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
         out.push(
-          `${reasoningTimePrefix(msg, start)}工具 · web.run${bits.length ? ` · ${bits.join(" / ")}` : ""}`,
+          `${reasoningTimePrefix(msg, start)}工具 · web.run · SEARCH${bits.length ? ` · ${bits.join(" / ")}` : ""}`,
         );
       } else {
         const identity = toolIdentity(msg, state);
-        const provider = identity.provider
-          ? `${identity.provider}${identity.source ? ` [${identity.source.toUpperCase()}]` : ""}`
-          : msg.recipient;
+        const provider = identity.provider ?? msg.recipient;
+        const kind = identity.kind ? ` · ${identity.kind.toUpperCase()}` : "";
+        const source = identity.source ? ` · ${identity.source.toUpperCase()}` : "";
         const operation = identity.operation ? ` · ${identity.operation}` : "";
-        out.push(`${reasoningTimePrefix(msg, start)}工具 · ${provider}${operation}`);
+        out.push(
+          `${reasoningTimePrefix(msg, start)}工具 · ${provider}${kind}${source}${operation}`,
+        );
       }
       continue;
     }
@@ -575,7 +593,12 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
     if (msg.recipient === "api_tool.call_tool" && logicalToolParent(msg, state)) continue;
 
     let args = connectorPayloadForTool(msg, state);
-    const identity = toolIdentity(msg, state);
+    let identity = toolIdentity(msg, state);
+    if (msg.recipient === "web.run") {
+      identity = { provider: "web.run", kind: "search" };
+    } else if (msg.recipient === "python") {
+      identity = { provider: "python", kind: "builtin" };
+    }
     const isEmptyHiddenWrapper =
       msg.metadata.is_visually_hidden_from_conversation === true &&
       msg.recipient === "functions.exec" &&
@@ -583,6 +606,9 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
       !identity.operation &&
       (!args || args === "{}");
     if (isEmptyHiddenWrapper) continue;
+    if (!identity.kind && msg.recipient === "functions.exec") {
+      identity = { ...identity, provider: identity.provider ?? "functions.exec", kind: "builtin" };
+    }
     if (msg.recipient === "web.run") {
       const search = searchDetailsForTool(msg, state);
       if (search.queries.length > 0 || search.results.length > 0) {
