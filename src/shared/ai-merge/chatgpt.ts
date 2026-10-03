@@ -1,5 +1,5 @@
 import type { SseEvent } from "../types";
-import type { AiEndMeta, AiToolCall, MergeChannelsResult } from "./types";
+import type { AiEndMeta, AiReasoningStage, AiToolCall, MergeChannelsResult } from "./types";
 import { isRecord, parseEventData } from "./helpers";
 
 type ChatgptMessage = {
@@ -499,18 +499,26 @@ function reasoningStartTime(state: ChatgptWebMergeState): number | undefined {
 }
 
 function reasoningDurationSec(state: ChatgptWebMergeState): number | undefined {
-  for (let i = state.order.length - 1; i >= 0; i -= 1) {
-    const msg = state.messages.get(state.order[i]!);
+  const sessions = new Map<string, number>();
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
     const value = msg?.metadata.finished_duration_sec;
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const start = msg?.metadata.reasoning_start_time;
+    const key = typeof start === "number" && Number.isFinite(start) ? String(start) : id;
+    sessions.set(key, value);
   }
-  return undefined;
+  if (sessions.size === 0) return undefined;
+  return Array.from(sessions.values()).reduce((sum, value) => sum + value, 0);
 }
 
-function reasoningTimePrefix(msg: ChatgptMessage, start?: number): string {
-  if (start == null || msg.createdAt == null || !Number.isFinite(msg.createdAt)) return "";
-  const elapsed = Math.max(0, msg.createdAt - start);
-  return `+${elapsed.toFixed(1)}s  `;
+function reasoningElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
+  if (start == null || msg.createdAt == null || !Number.isFinite(msg.createdAt)) return undefined;
+  return Math.max(0, msg.createdAt - start);
+}
+
+function reasoningTimePrefix(elapsedSec?: number): string {
+  return elapsedSec == null ? "" : `+${elapsedSec.toFixed(1)}s  `;
 }
 
 function reasoningTitle(msg: ChatgptMessage): string {
@@ -559,54 +567,108 @@ function toolContextLabel(tool: ChatgptMessage, state: ChatgptWebMergeState): st
   return `${provider}${kind}${source}${operation}`;
 }
 
-function reasoningLabel(
-  prefix: "阶段" | "摘要",
-  msg: ChatgptMessage,
-  text: string,
-  state: ChatgptWebMergeState,
-): string {
-  const tool = relatedLogicalTool(msg, state);
-  return tool ? `${prefix} · ${toolContextLabel(tool, state)} · ${text}` : `${prefix} · ${text}`;
+function logicalToolStageTitle(tool: ChatgptMessage, state: ChatgptWebMergeState): string {
+  const own = reasoningTitle(tool);
+  if (own) return own;
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    const title = reasoningTitle(msg);
+    if (title) return title;
+  }
+  return "";
 }
 
-function visibleReasoningText(state: ChatgptWebMergeState): string {
-  const out: string[] = [];
-  const seenTitles = new Set<string>();
-  const seenSummaries = new Set<string>();
+function reasoningStageTitle(msg: ChatgptMessage, state: ChatgptWebMergeState): string {
+  const own = reasoningTitle(msg);
+  if (own) return own;
+
+  const tool = relatedLogicalTool(msg, state);
+  if (tool) {
+    const title = logicalToolStageTitle(tool, state);
+    if (title) return title;
+  }
+
+  let next = parentId(msg);
+  const seen = new Set<string>();
+  while (next && !seen.has(next)) {
+    seen.add(next);
+    const parent = state.messages.get(next);
+    if (!parent) break;
+    const title = reasoningTitle(parent);
+    if (title) return title;
+    next = parentId(parent);
+  }
+  return "";
+}
+
+function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
+  const stages: AiReasoningStage[] = [];
+  const seenTools = new Set<string>();
   const start = reasoningStartTime(state);
+  let current: AiReasoningStage | undefined;
+
+  const createStage = (title: string, msg: ChatgptMessage): AiReasoningStage => {
+    const stage: AiReasoningStage = {
+      id: msg.id,
+      title,
+      elapsedSec: reasoningElapsedSec(msg, start),
+      items: [],
+    };
+    stages.push(stage);
+    current = stage;
+    return stage;
+  };
+
+  const stageFor = (
+    msg: ChatgptMessage,
+    title: string,
+    preferExisting: boolean,
+  ): AiReasoningStage => {
+    if (title) {
+      if (current?.title === title) return current;
+      if (preferExisting) {
+        for (let i = stages.length - 1; i >= 0; i -= 1) {
+          if (stages[i]!.title === title) return stages[i]!;
+        }
+      }
+      return createStage(title, msg);
+    }
+    return current ?? createStage("", msg);
+  };
 
   for (const id of state.order) {
     const msg = state.messages.get(id);
     if (!msg) continue;
-    if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
 
     const title = reasoningTitle(msg);
-    if (title && !seenTitles.has(title)) {
-      seenTitles.add(title);
-      out.push(`${reasoningTimePrefix(msg, start)}${reasoningLabel("阶段", msg, title, state)}`);
+    if (title && current?.title !== title) {
+      createStage(title, msg);
     }
 
     if (isLogicalToolCall(msg)) {
-      if (msg.recipient === "web.run") {
-        const search = searchDetailsForTool(msg, state);
-        const bits: string[] = [];
-        if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
-        if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
-        out.push(
-          `${reasoningTimePrefix(msg, start)}工具 · web.run · SEARCH${bits.length ? ` · ${bits.join(" / ")}` : ""}`,
-        );
-      } else {
-        const identity = toolIdentity(msg, state);
-        const provider = identity.provider ?? msg.recipient;
-        const kind = identity.kind ? ` · ${identity.kind.toUpperCase()}` : "";
-        const source = identity.source ? ` · ${identity.source.toUpperCase()}` : "";
-        const operation = identity.operation ? ` · ${identity.operation}` : "";
-        out.push(
-          `${reasoningTimePrefix(msg, start)}工具 · ${provider}${kind}${source}${operation}`,
-        );
+      if (!seenTools.has(msg.id)) {
+        seenTools.add(msg.id);
+        const toolTitle = logicalToolStageTitle(msg, state) || title;
+        const stage = stageFor(msg, toolTitle, false);
+        let label = toolContextLabel(msg, state);
+        if (msg.recipient === "web.run") {
+          const search = searchDetailsForTool(msg, state);
+          const bits: string[] = [];
+          if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
+          if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
+          if (bits.length > 0) label += ` · ${bits.join(" / ")}`;
+        }
+        stage.items.push({
+          kind: "tool",
+          text: label,
+          elapsedSec: reasoningElapsedSec(msg, start),
+        });
       }
       continue;
     }
+
+    if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
 
     if (msg.role !== "assistant") continue;
     if (msg.recipient && msg.recipient !== "all") continue;
@@ -619,25 +681,48 @@ function visibleReasoningText(state: ChatgptWebMergeState): string {
       (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
       msg.text
     ) {
-      out.push(`${reasoningTimePrefix(msg, start)}说明 · ${msg.text}`);
+      const stage = stageFor(msg, reasoningStageTitle(msg, state), false);
+      stage.items.push({
+        kind: "commentary",
+        text: msg.text,
+        elapsedSec: reasoningElapsedSec(msg, start),
+      });
       continue;
     }
     if (
       (msg.contentType === "reasoning_recap" || msg.contentType === "thoughts") &&
       msg.reasoningSummary
     ) {
-      const summary = msg.reasoningSummary.trim();
-      const isDurationOnly = /^思考了\s*\d+(?:\.\d+)?s$/i.test(summary);
-      if (!isDurationOnly && !seenSummaries.has(summary)) {
-        seenSummaries.add(summary);
-        out.push(
-          `${reasoningTimePrefix(msg, start)}${reasoningLabel("摘要", msg, summary, state)}`,
-        );
+      for (const summary of msg.reasoningSummary
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)) {
+        const isDurationOnly = /^思考了\s*\d+(?:\.\d+)?s$/i.test(summary);
+        if (isDurationOnly) continue;
+        const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
+        stage.items.push({
+          kind: "summary" as const,
+          text: summary,
+          elapsedSec: reasoningElapsedSec(msg, start),
+        });
       }
     }
   }
 
-  const duration = reasoningDurationSec(state);
+  return stages.filter((stage) => stage.title || stage.items.length > 0);
+}
+
+function visibleReasoningText(stages: AiReasoningStage[], duration?: number): string {
+  const out: string[] = [];
+  for (const stage of stages) {
+    const stageTitle = stage.title || "未归类";
+    out.push(`${reasoningTimePrefix(stage.elapsedSec)}阶段 · ${stageTitle}`);
+    for (const item of stage.items) {
+      const prefix = item.kind === "commentary" ? "说明" : item.kind === "tool" ? "工具" : "摘要";
+      out.push(`${reasoningTimePrefix(item.elapsedSec)}${prefix} · ${item.text}`);
+    }
+  }
+
   if (duration != null) out.push(`总思考时间：${duration}s`);
   return out.join("\n\n");
 }
@@ -718,11 +803,15 @@ export function pushChatgptWeb(
 }
 
 export function snapshotChatgptWeb(state: ChatgptWebMergeState): MergeChannelsResult {
+  const stages = reasoningStages(state);
+  const duration = reasoningDurationSec(state);
   return {
     channels: {
       content: finalAssistantText(state),
-      reasoning: visibleReasoningText(state),
+      reasoning: visibleReasoningText(stages, duration),
       tools: toolCalls(state),
+      reasoningStages: stages,
+      reasoningDurationSec: duration,
     },
     endMeta: state.endMeta,
     chunkCount: state.chunkCount,

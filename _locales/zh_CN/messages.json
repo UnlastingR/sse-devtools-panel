@@ -131,6 +131,27 @@
   "conversationReasoningFieldsLabel": {
     "message": "思考字段"
   },
+  "conversationReasoningUnclassified": {
+    "message": "未归类阶段"
+  },
+  "conversationReasoningCommentary": {
+    "message": "说明"
+  },
+  "conversationReasoningTool": {
+    "message": "工具"
+  },
+  "conversationReasoningSummary": {
+    "message": "摘要"
+  },
+  "conversationReasoningTotalTime": {
+    "message": "总思考时间"
+  },
+  "conversationReasoningExpand": {
+    "message": "展开阶段详情"
+  },
+  "conversationReasoningCollapse": {
+    "message": "收起阶段详情"
+  },
   "conversationToolsQueries": {
     "message": "搜索词"
   },

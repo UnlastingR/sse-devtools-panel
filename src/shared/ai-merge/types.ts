@@ -15,10 +15,27 @@ export interface AiToolCall {
   arguments: string;
 }
 
+export interface AiReasoningItem {
+  kind: "commentary" | "tool" | "summary";
+  text: string;
+  elapsedSec?: number;
+}
+
+export interface AiReasoningStage {
+  id: string;
+  /** Empty only for genuinely unclassified visible reasoning. */
+  title: string;
+  elapsedSec?: number;
+  items: AiReasoningItem[];
+}
+
 export interface AiConversationChannels {
   content: string;
   reasoning: string;
   tools: AiToolCall[];
+  /** Structured ChatGPT reasoning timeline used by the collapsible UI. */
+  reasoningStages?: AiReasoningStage[];
+  reasoningDurationSec?: number;
 }
 
 export interface AiEndMeta {

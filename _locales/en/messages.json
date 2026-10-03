@@ -131,6 +131,27 @@
   "conversationReasoningFieldsLabel": {
     "message": "thinking fields"
   },
+  "conversationReasoningUnclassified": {
+    "message": "Unclassified stage"
+  },
+  "conversationReasoningCommentary": {
+    "message": "Commentary"
+  },
+  "conversationReasoningTool": {
+    "message": "Tool"
+  },
+  "conversationReasoningSummary": {
+    "message": "Summary"
+  },
+  "conversationReasoningTotalTime": {
+    "message": "Total reasoning time"
+  },
+  "conversationReasoningExpand": {
+    "message": "Expand stage details"
+  },
+  "conversationReasoningCollapse": {
+    "message": "Collapse stage details"
+  },
   "conversationToolsQueries": {
     "message": "Queries"
   },

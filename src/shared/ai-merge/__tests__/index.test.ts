@@ -613,17 +613,20 @@ describe("ai-merge", () => {
         second.results.length === 1 && second.results[0].title === "Two",
         "second web results",
       );
-      assert(
-        t.channels.reasoning.includes("阶段 · web.run · SEARCH · 搜索网页"),
-        "reasoning stage linked to search",
-      );
+      assert(t.channels.reasoning.includes("阶段 · 搜索网页"), "reasoning stage included");
       assert(
         t.channels.reasoning.includes("工具 · web.run · SEARCH · 1 个查询 / 1 个结果"),
         "tool trace included",
       );
+      assert(t.channels.reasoning.includes("摘要 · 已完成两轮搜索"), "summary included");
+      assert(t.channels.reasoningStages?.length === 2, "two structured reasoning stages");
+      assert(t.channels.reasoningStages?.[0]?.title === "搜索网页", "first stage title");
+      assert(t.channels.reasoningStages?.[1]?.title === "补充搜索", "second stage title");
       assert(
-        t.channels.reasoning.includes("摘要 · web.run · SEARCH · 已完成两轮搜索"),
-        "summary linked to search",
+        t.channels.reasoningStages?.[1]?.items.some(
+          (item) => item.kind === "summary" && item.text === "已完成两轮搜索",
+        ),
+        "summary grouped under second stage",
       );
       assert(t.channels.reasoning.includes("总思考时间：5s"), "duration included");
       assert(!t.channels.reasoning.includes("思考了 5s"), "duration recap de-duplicated");
@@ -662,10 +665,61 @@ describe("ai-merge", () => {
       ];
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       assert(
-        t.channels.reasoning.includes("摘要 · 第一步\n第二步"),
-        `thought summaries: ${t.channels.reasoning}`,
+        t.channels.reasoning.includes("摘要 · 第一步"),
+        `first summary: ${t.channels.reasoning}`,
+      );
+      assert(
+        t.channels.reasoning.includes("摘要 · 第二步"),
+        `second summary: ${t.channels.reasoning}`,
+      );
+      assert(t.channels.reasoningStages?.length === 1, "unclassified thoughts use one stage");
+      assert(
+        t.channels.reasoningStages?.[0]?.items.filter((item) => item.kind === "summary").length ===
+          2,
+        "all summary revisions are preserved",
       );
       assert(!t.channels.reasoning.includes("hidden"), "private thought content must not leak");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "summary-revisions",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "整理分阶段思路", content: "hidden", finished: true }],
+                },
+                metadata: {},
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            p: "/message/content/thoughts",
+            o: "append",
+            v: [{ summary: "整理了分阶段思路", content: "hidden too", finished: true }],
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      const summaries =
+        t.channels.reasoningStages?.[0]?.items
+          .filter((item) => item.kind === "summary")
+          .map((item) => item.text) ?? [];
+      assert(summaries.length === 2, "similar summary revisions are not deduplicated");
+      assert(summaries[0] === "整理分阶段思路", "first summary revision preserved");
+      assert(summaries[1] === "整理了分阶段思路", "second summary revision preserved");
     }
 
     {
