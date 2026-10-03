@@ -373,7 +373,7 @@ reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallAllowlist" /v 1 /t
 reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist" /v 1 /t REG_SZ /d "<EXTENSION_ID>;<UPDATE_XML_URL>" /f
 ```
 
-For example, `<UPDATE_XML_URL>` can point to a self-hosted `updates.xml` whose update entry references the signed `.crx` file. Keep the extension ID stable by signing releases with the same key.
+For example, `<UPDATE_XML_URL>` can point to a self-hosted `updates.xml` whose update entry references the signed `.crx` file. Keep the extension ID stable by signing releases with the same key. For reliable subsequent updates, also put the same `update_url` in the extension manifest, or deploy `ExtensionSettings` with `override_update_url: true`; otherwise Chrome can use the manifest's update URL after the initial policy installation.
 
 Then:
 

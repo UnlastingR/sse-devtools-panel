@@ -399,7 +399,7 @@ reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallAllowlist" /v 1 /t
 reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist" /v 1 /t REG_SZ /d "<EXTENSION_ID>;<UPDATE_XML_URL>" /f
 ```
 
-其中 `<UPDATE_XML_URL>` 可以指向自托管的 `updates.xml`，再由该更新清单指向已签名的 `.crx` 文件。每次发布应使用同一签名密钥，以保持扩展 ID 不变。
+其中 `<UPDATE_XML_URL>` 可以指向自托管的 `updates.xml`，再由该更新清单指向已签名的 `.crx` 文件。每次发布应使用同一签名密钥，以保持扩展 ID 不变。为了保证后续版本也继续从该地址更新，建议同时在扩展 `manifest.json` 中写入相同的 `update_url`，或使用 `ExtensionSettings` 并设置 `override_update_url: true`；否则 Chrome 在首次策略安装后可能改用扩展清单自身的更新地址。
 
 写入后：
 

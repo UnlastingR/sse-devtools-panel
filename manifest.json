@@ -27,6 +27,7 @@
     "page": "options/options.html",
     "open_in_tab": false
   },
+  "update_url": "https://crx.fyzure.fyi/sse-devtools-panel/updates.xml",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
