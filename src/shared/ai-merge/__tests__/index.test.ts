@@ -142,7 +142,10 @@ describe("ai-merge", () => {
         `chatgpt content: ${t.channels.content}`,
       );
       assert(!t.channels.content.includes("Camoufox"), "hidden commentary must be excluded");
-      assert(t.channels.reasoning === "正在检查。", `chatgpt reasoning: ${t.channels.reasoning}`);
+      assert(
+        t.channels.reasoning.includes("说明 · 正在检查。"),
+        `chatgpt reasoning: ${t.channels.reasoning}`,
+      );
       assert(t.channels.tools.length === 1, `chatgpt tools: ${t.channels.tools.length}`);
       assert(t.channels.tools[0]?.name === "functions.exec", "chatgpt tool name");
       assert(t.endMeta.model === "gpt-5-6-thinking", "chatgpt model");
@@ -191,11 +194,38 @@ describe("ai-merge", () => {
           }),
           "delta",
         ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "connector-result",
+                author: { role: "tool", name: "api_tool.call_tool" },
+                content: { content_type: "code", text: '{"result":"ok"}' },
+                metadata: {
+                  parent_id: "connector",
+                  invoked_plugin: {},
+                  invoked_resource: {
+                    app_name: "Devspace",
+                    contains_mcp_source: true,
+                    resource_uri: "/asdk_app_x/link_y/read",
+                  },
+                },
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
       ];
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       assert(t.channels.tools.length === 1, `connector tools: ${t.channels.tools.length}`);
       assert(t.channels.tools[0]?.name === "functions.exec", "outer logical tool name");
       assert(t.channels.tools[0]?.arguments.includes('"path":"a.ts"'), "connector args merged");
+      assert(t.channels.tools[0]?.provider === "Devspace", "connector app name restored");
+      assert(t.channels.tools[0]?.source === "mcp", "connector source restored");
+      assert(t.channels.tools[0]?.operation === "read", "connector operation restored");
     }
 
     {
@@ -283,6 +313,152 @@ describe("ai-merge", () => {
             o: "add",
             v: {
               message: {
+                id: "web-1",
+                author: { role: "assistant" },
+                create_time: 100,
+                content: { content_type: "text", parts: [""] },
+                metadata: { reasoning_start_time: 100, reasoning_title: "搜索网页" },
+                recipient: "web.run",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "result-1",
+                author: { role: "tool", name: "web.run" },
+                create_time: 101,
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  parent_id: "web-1",
+                  search_model_queries: { queries: ["first query"] },
+                  search_result_groups: [
+                    {
+                      domain: "one.example",
+                      entries: [{ title: "One", url: "https://one.example", snippet: "one" }],
+                    },
+                  ],
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "web-2",
+                author: { role: "assistant" },
+                create_time: 102,
+                content: { content_type: "text", parts: [""] },
+                metadata: { parent_id: "result-1", reasoning_title: "补充搜索" },
+                recipient: "web.run",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "result-2",
+                author: { role: "tool", name: "web.run" },
+                create_time: 103,
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  parent_id: "web-2",
+                  search_model_queries: { queries: ["second query"] },
+                  search_result_groups: [
+                    {
+                      domain: "two.example",
+                      entries: [{ title: "Two", url: "https://two.example", snippet: "two" }],
+                    },
+                  ],
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "summary",
+                author: { role: "assistant" },
+                create_time: 104,
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "已完成两轮搜索", content: "", finished: true }],
+                },
+                metadata: { parent_id: "result-2" },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "recap",
+                author: { role: "assistant" },
+                create_time: 105,
+                content: { content_type: "reasoning_recap", content: "思考了 5s" },
+                metadata: { parent_id: "summary", finished_duration_sec: 5 },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 2, `separate web tools: ${t.channels.tools.length}`);
+      const first = JSON.parse(t.channels.tools[0]!.arguments);
+      const second = JSON.parse(t.channels.tools[1]!.arguments);
+      assert(first.queries.join() === "first query", "first web call owns only first query");
+      assert(first.results.length === 1 && first.results[0].title === "One", "first web results");
+      assert(second.queries.join() === "second query", "second web call owns only second query");
+      assert(
+        second.results.length === 1 && second.results[0].title === "Two",
+        "second web results",
+      );
+      assert(t.channels.reasoning.includes("阶段 · 搜索网页"), "reasoning stage included");
+      assert(
+        t.channels.reasoning.includes("工具 · web.run · 1 个查询 / 1 个结果"),
+        "tool trace included",
+      );
+      assert(t.channels.reasoning.includes("摘要 · 已完成两轮搜索"), "summary included");
+      assert(t.channels.reasoning.includes("总思考时间：5s"), "duration included");
+      assert(!t.channels.reasoning.includes("思考了 5s"), "duration recap de-duplicated");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
                 id: "thoughts",
                 author: { role: "assistant" },
                 content: {
@@ -308,7 +484,7 @@ describe("ai-merge", () => {
       ];
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       assert(
-        t.channels.reasoning === "第一步\n第二步",
+        t.channels.reasoning.includes("摘要 · 第一步\n第二步"),
         `thought summaries: ${t.channels.reasoning}`,
       );
       assert(!t.channels.reasoning.includes("hidden"), "private thought content must not leak");

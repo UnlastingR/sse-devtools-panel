@@ -4,6 +4,12 @@ export interface AiToolCall {
   index: number;
   id?: string;
   name?: string;
+  /** User-facing app/plugin/MCP name when the transport exposes it. */
+  provider?: string;
+  /** How the external tool is connected. */
+  source?: "mcp" | "plugin" | "builtin";
+  /** Concrete operation within the provider, e.g. read/apply_patch/exec_command. */
+  operation?: string;
   arguments: string;
 }
 

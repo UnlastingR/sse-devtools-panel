@@ -6,6 +6,7 @@ type ChatgptMessage = {
   id: string;
   role: string;
   authorName?: string;
+  createdAt?: number;
   recipient?: string;
   channel?: string | null;
   contentType?: string;
@@ -89,6 +90,7 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
     id: raw.id,
     role,
     authorName: author && typeof author.name === "string" ? author.name : existing?.authorName,
+    createdAt: typeof raw.create_time === "number" ? raw.create_time : existing?.createdAt,
     recipient: typeof raw.recipient === "string" ? raw.recipient : existing?.recipient,
     channel:
       typeof raw.channel === "string" || raw.channel === null ? raw.channel : existing?.channel,
@@ -226,17 +228,36 @@ function parentId(msg: ChatgptMessage): string | undefined {
   return typeof msg.metadata.parent_id === "string" ? msg.metadata.parent_id : undefined;
 }
 
-function isDescendantOf(
+function isLogicalToolCall(msg: ChatgptMessage): boolean {
+  return (
+    msg.role === "assistant" &&
+    Boolean(msg.recipient) &&
+    msg.recipient !== "all" &&
+    msg.recipient !== "api_tool.call_tool"
+  );
+}
+
+/**
+ * Associate a tool/result message with its nearest logical assistant tool
+ * ancestor. This keeps a later nested web.run from being folded into the
+ * previous web.run just because it is also a descendant in the message tree.
+ */
+function belongsToLogicalTool(
   candidate: ChatgptMessage,
-  ancestorId: string,
+  tool: ChatgptMessage,
   state: ChatgptWebMergeState,
 ): boolean {
+  if (candidate.id === tool.id) return true;
+  if (isLogicalToolCall(candidate)) return false;
+
   let next = parentId(candidate);
   const seen = new Set<string>();
   while (next && !seen.has(next)) {
-    if (next === ancestorId) return true;
     seen.add(next);
-    next = state.messages.get(next) ? parentId(state.messages.get(next)!) : undefined;
+    const parent = state.messages.get(next);
+    if (!parent) return false;
+    if (isLogicalToolCall(parent)) return parent.id === tool.id;
+    next = parentId(parent);
   }
   return false;
 }
@@ -346,7 +367,7 @@ function searchDetailsForTool(
   ingest(tool);
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || !isDescendantOf(msg, tool.id, state)) continue;
+    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
     ingest(msg);
   }
   return { queries, results };
@@ -358,7 +379,7 @@ function connectorPayloadForTool(tool: ChatgptMessage, state: ChatgptWebMergeSta
 
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || !isDescendantOf(msg, tool.id, state)) continue;
+    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
     if (msg.role !== "assistant" || msg.recipient !== "api_tool.call_tool") continue;
     const payload = msg.metadata.connector_tool_payload;
     if (typeof payload === "string" && payload) return payload;
@@ -366,12 +387,120 @@ function connectorPayloadForTool(tool: ChatgptMessage, state: ChatgptWebMergeSta
   return tool.text || "{}";
 }
 
-function visibleReasoningText(state: ChatgptWebMergeState): string {
-  const out: string[] = [];
+function resourceOperation(resourceUri: string): string | undefined {
+  const parts = resourceUri.split("/").filter(Boolean);
+  const last = parts.at(-1);
+  return last ? decodeURIComponent(last) : undefined;
+}
+
+function toolIdentity(
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): Pick<AiToolCall, "provider" | "source" | "operation"> {
+  const candidates: ChatgptMessage[] = [tool];
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || msg.role !== "assistant") continue;
+    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    candidates.push(msg);
+  }
+
+  for (const msg of candidates) {
+    const resource = isRecord(msg.metadata.invoked_resource) ? msg.metadata.invoked_resource : null;
+    if (resource) {
+      const provider =
+        typeof resource.app_name === "string" && resource.app_name.trim()
+          ? resource.app_name.trim()
+          : undefined;
+      const uri = typeof resource.resource_uri === "string" ? resource.resource_uri : "";
+      return {
+        provider,
+        source: resource.contains_mcp_source === true ? "mcp" : undefined,
+        operation: uri ? resourceOperation(uri) : undefined,
+      };
+    }
+
+    const plugin = isRecord(msg.metadata.invoked_plugin) ? msg.metadata.invoked_plugin : null;
+    if (plugin && Object.keys(plugin).length > 0) {
+      const provider = [plugin.app_name, plugin.plugin_name, plugin.name, plugin.namespace].find(
+        (value): value is string => typeof value === "string" && Boolean(value.trim()),
+      );
+      const operation = [plugin.operation, plugin.tool_name, plugin.action].find(
+        (value): value is string => typeof value === "string" && Boolean(value.trim()),
+      );
+      return { provider: provider?.trim(), source: "plugin", operation: operation?.trim() };
+    }
+  }
+  return {};
+}
+
+function reasoningStartTime(state: ChatgptWebMergeState): number | undefined {
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    const value = msg?.metadata.reasoning_start_time;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function reasoningDurationSec(state: ChatgptWebMergeState): number | undefined {
+  for (let i = state.order.length - 1; i >= 0; i -= 1) {
+    const msg = state.messages.get(state.order[i]!);
+    const value = msg?.metadata.finished_duration_sec;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function reasoningTimePrefix(msg: ChatgptMessage, start?: number): string {
+  if (start == null || msg.createdAt == null || !Number.isFinite(msg.createdAt)) return "";
+  const elapsed = Math.max(0, msg.createdAt - start);
+  return `+${elapsed.toFixed(1)}s  `;
+}
+
+function reasoningTitle(msg: ChatgptMessage): string {
+  return typeof msg.metadata.reasoning_title === "string"
+    ? msg.metadata.reasoning_title.trim()
+    : "";
+}
+
+function visibleReasoningText(state: ChatgptWebMergeState): string {
+  const out: string[] = [];
+  const seenTitles = new Set<string>();
+  const seenSummaries = new Set<string>();
+  const start = reasoningStartTime(state);
+
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg) continue;
     if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
+
+    const title = reasoningTitle(msg);
+    if (title && !seenTitles.has(title)) {
+      seenTitles.add(title);
+      out.push(`${reasoningTimePrefix(msg, start)}阶段 · ${title}`);
+    }
+
+    if (isLogicalToolCall(msg)) {
+      if (msg.recipient === "web.run") {
+        const search = searchDetailsForTool(msg, state);
+        const bits: string[] = [];
+        if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
+        if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
+        out.push(
+          `${reasoningTimePrefix(msg, start)}工具 · web.run${bits.length ? ` · ${bits.join(" / ")}` : ""}`,
+        );
+      } else {
+        const identity = toolIdentity(msg, state);
+        const provider = identity.provider
+          ? `${identity.provider}${identity.source ? ` [${identity.source.toUpperCase()}]` : ""}`
+          : msg.recipient;
+        const operation = identity.operation ? ` · ${identity.operation}` : "";
+        out.push(`${reasoningTimePrefix(msg, start)}工具 · ${provider}${operation}`);
+      }
+      continue;
+    }
+
+    if (msg.role !== "assistant") continue;
     if (msg.recipient && msg.recipient !== "all") continue;
 
     // User-visible intermediate commentary belongs in the reasoning pane,
@@ -382,16 +511,24 @@ function visibleReasoningText(state: ChatgptWebMergeState): string {
       (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
       msg.text
     ) {
-      out.push(msg.text);
+      out.push(`${reasoningTimePrefix(msg, start)}说明 · ${msg.text}`);
       continue;
     }
     if (
       (msg.contentType === "reasoning_recap" || msg.contentType === "thoughts") &&
       msg.reasoningSummary
     ) {
-      out.push(msg.reasoningSummary);
+      const summary = msg.reasoningSummary.trim();
+      const isDurationOnly = /^思考了\s*\d+(?:\.\d+)?s$/i.test(summary);
+      if (!isDurationOnly && !seenSummaries.has(summary)) {
+        seenSummaries.add(summary);
+        out.push(`${reasoningTimePrefix(msg, start)}摘要 · ${summary}`);
+      }
     }
   }
+
+  const duration = reasoningDurationSec(state);
+  if (duration != null) out.push(`总思考时间：${duration}s`);
   return out.join("\n\n");
 }
 
@@ -404,6 +541,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
     if (msg.recipient === "api_tool.call_tool" && logicalToolParent(msg, state)) continue;
 
     let args = connectorPayloadForTool(msg, state);
+    const identity = toolIdentity(msg, state);
     if (msg.recipient === "web.run") {
       const search = searchDetailsForTool(msg, state);
       if (search.queries.length > 0 || search.results.length > 0) {
@@ -414,6 +552,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
       index: out.length,
       id: msg.id,
       name: msg.recipient,
+      ...identity,
       arguments: args || "{}",
     });
   }

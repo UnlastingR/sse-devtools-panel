@@ -17,7 +17,11 @@ export type StreamAnomaly = {
 };
 
 export const OVERSIZED_PACKET_THRESHOLD = 16_000;
-const CHATGPT_CONVERSATION_OVERSIZED_PACKET_THRESHOLD = 128_000;
+// ChatGPT web conversation deltas can legitimately embed large web-search
+// result groups and rich content-reference metadata in one packet. Keep a
+// much higher ceiling here so normal ~100–200 KB packets are not reported as
+// anomalies while still catching truly exceptional payloads.
+const CHATGPT_CONVERSATION_OVERSIZED_PACKET_THRESHOLD = 512_000;
 
 const anomalyCache = new Map<string, { eventCount: number; anomalies: StreamAnomaly[] }>();
 const specWarningCache = new Map<

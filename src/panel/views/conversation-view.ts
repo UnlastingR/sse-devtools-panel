@@ -203,8 +203,22 @@ function buildConversationFingerprint(
 
 function toolsFingerprint(merged: AiConversation): string {
   return merged.channels.tools
-    .map((tc) => `${tc.index}:${tc.name ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`)
+    .map(
+      (tc) =>
+        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
+    )
     .join("|");
+}
+
+function toolDisplayName(tc: AiConversation["channels"]["tools"][number]): string {
+  if (!tc.provider) return tc.name || t("conversationToolsFunction");
+  const source = tc.source ? ` · ${tc.source.toUpperCase()}` : "";
+  return `${tc.provider}${source}`;
+}
+
+function toolDisplayOperation(tc: AiConversation["channels"]["tools"][number]): string {
+  if (tc.operation && tc.name && tc.operation !== tc.name) return `${tc.operation} · ${tc.name}`;
+  return tc.operation || tc.name || "";
 }
 
 function conversationChannelText(merged: AiConversation, channel: ConversationChannel): string {
@@ -217,7 +231,9 @@ function conversationChannelText(merged: AiConversation, channel: ConversationCh
       return merged.channels.tools.length
         ? merged.channels.tools
             .map((tc) => {
-              const head = `#${tc.index}${tc.name ? ` ${tc.name}` : ""}${tc.id ? ` (${tc.id})` : ""}`;
+              const display = toolDisplayName(tc);
+              const operation = toolDisplayOperation(tc);
+              const head = `#${tc.index}${display ? ` ${display}` : ""}${operation && operation !== display ? ` · ${operation}` : ""}${tc.id ? ` (${tc.id})` : ""}`;
               return `${head}\n${tc.arguments || "{}"}`;
             })
             .join("\n\n")
@@ -313,9 +329,7 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
 
     const badge = document.createElement("span");
     badge.className = "tool-card-badge";
-    badge.textContent = isSearch
-      ? t("conversationToolsWebSearch")
-      : tc.name || t("conversationToolsFunction");
+    badge.textContent = isSearch ? t("conversationToolsWebSearch") : toolDisplayName(tc);
     head.append(caret, badge);
 
     if (tc.id) {
@@ -329,8 +343,8 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
     if (isSearch && isWebSearchPayload(parsed)) {
       const results = Array.isArray(parsed.results) ? parsed.results : [];
       summaryText = t("conversationToolsResults", String(results.length));
-    } else if (tc.name) {
-      summaryText = tc.name;
+    } else if (tc.name || tc.operation) {
+      summaryText = toolDisplayOperation(tc);
     }
     if (summaryText) {
       const summary = document.createElement("span");
@@ -429,7 +443,7 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
       rSection.appendChild(list);
       body.appendChild(rSection);
     } else {
-      if (tc.name && !isSearch) {
+      if ((tc.name || tc.operation || tc.provider) && !isSearch) {
         const nameRow = document.createElement("div");
         nameRow.className = "tool-card-section";
         const nameLabel = document.createElement("div");
@@ -437,7 +451,14 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
         nameLabel.textContent = t("conversationToolsFunction");
         const nameVal = document.createElement("code");
         nameVal.className = "tool-fn-name";
-        nameVal.textContent = tc.name;
+        nameVal.textContent = [
+          tc.provider,
+          tc.source ? `[${tc.source.toUpperCase()}]` : "",
+          tc.operation,
+          tc.name && tc.name !== tc.operation ? `via ${tc.name}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
         nameRow.append(nameLabel, nameVal);
         body.appendChild(nameRow);
       }

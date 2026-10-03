@@ -36,8 +36,14 @@ describe("stream anomalies", () => {
     expect(scanStreamAnomalies(upload).some((a) => a.kind === "oversized-packet")).toBe(true);
   });
 
-  it("still flags very large ChatGPT conversation events", () => {
-    const huge = JSON.stringify({ payload: "x".repeat(130_000) });
+  it("does not flag normal large ChatGPT search/metadata events", () => {
+    const large = JSON.stringify({ payload: "x".repeat(145_000) });
+    const chatgpt = record("https://chatgpt.com/backend-api/f/conversation", large);
+    expect(scanStreamAnomalies(chatgpt).some((a) => a.kind === "oversized-packet")).toBe(false);
+  });
+
+  it("still flags exceptionally large ChatGPT conversation events", () => {
+    const huge = JSON.stringify({ payload: "x".repeat(520_000) });
     const chatgpt = record("https://chatgpt.com/backend-api/f/conversation", huge);
     expect(scanStreamAnomalies(chatgpt).some((a) => a.kind === "oversized-packet")).toBe(true);
   });
