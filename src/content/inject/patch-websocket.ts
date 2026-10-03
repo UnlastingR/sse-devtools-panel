@@ -180,9 +180,7 @@ export function patchWebSocket(
     protocols?: string | string[],
   ): WebSocket {
     const instance =
-      protocols === undefined
-        ? new OriginalWebSocket(url)
-        : new OriginalWebSocket(url, protocols);
+      protocols === undefined ? new OriginalWebSocket(url) : new OriginalWebSocket(url, protocols);
     const socketUrl = String(url);
     if (!isChatgptSocketUrl(socketUrl)) return instance;
     const socketId = ++socketSeq;

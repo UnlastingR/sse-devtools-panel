@@ -56,7 +56,7 @@ describe("patch-websocket", () => {
           type: "subscribe",
           topic_id: topic,
           recovered: true,
-          catchups: [streamItem(topic, "catchup-1", "data: {\"type\":\"stream_handoff\"}\n\n")],
+          catchups: [streamItem(topic, "catchup-1", 'data: {"type":"stream_handoff"}\n\n')],
         },
       },
     ];
@@ -66,7 +66,7 @@ describe("patch-websocket", () => {
         topicId: topic,
         type: "chunk",
         streamItemId: "catchup-1",
-        encodedItem: "data: {\"type\":\"stream_handoff\"}\n\n",
+        encodedItem: 'data: {"type":"stream_handoff"}\n\n',
       },
     ]);
   });

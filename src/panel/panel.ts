@@ -975,10 +975,7 @@ function setupActions(): void {
   elStreamsTransportFilter.addEventListener("change", () => {
     const value = elStreamsTransportFilter.value;
     state.streamsTransportFilter =
-      value === "fetch" ||
-      value === "eventsource" ||
-      value === "xhr" ||
-      value === "websocket"
+      value === "fetch" || value === "eventsource" || value === "xhr" || value === "websocket"
         ? value
         : "all";
     renderList();
