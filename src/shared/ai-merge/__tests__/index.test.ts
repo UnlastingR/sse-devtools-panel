@@ -38,6 +38,100 @@ describe("ai-merge", () => {
         ev("v1", "delta_encoding"),
         ev(
           JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "tool-a",
+                author: { role: "assistant" },
+                create_time: 101,
+                content: { content_type: "code", text: "{}" },
+                metadata: { reasoning_title: "阶段 A" },
+                recipient: "web.run",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "tool-b",
+                author: { role: "assistant" },
+                create_time: 102,
+                content: { content_type: "code", text: "{}" },
+                metadata: { reasoning_title: "阶段 B", parent_id: "tool-a" },
+                recipient: "python",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "late-summary-a",
+                author: { role: "assistant" },
+                create_time: null,
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "阶段 A 摘要", content: "hidden", finished: true }],
+                },
+                metadata: {
+                  inline_cot_expandable_content: { source_message_ids: ["tool-a"] },
+                  reasoning_title: "阶段 A",
+                },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "title-only-result",
+                author: { role: "tool", name: "web.run" },
+                create_time: null,
+                content: { content_type: "text", parts: [""] },
+                metadata: { reasoning_title: "空阶段" },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      const stages = t.channels.reasoningStages ?? [];
+      assert(
+        stages.length === 2,
+        `delayed summaries should not duplicate stages: ${stages.length}`,
+      );
+      assert(stages[0]?.title === "阶段 A", "first stage preserved");
+      assert(stages[0]?.elapsedSec !== undefined, "first stage keeps timestamp");
+      assert(
+        stages[0]?.items.some((item) => item.kind === "summary" && item.text === "阶段 A 摘要"),
+        "late summary is attached back to original stage",
+      );
+      assert(stages[1]?.title === "阶段 B", "second stage preserved");
+      assert(!stages.some((stage) => stage.title === "空阶段"), "title-only stage is omitted");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
             v: {
               message: {
                 id: "hidden-progress",

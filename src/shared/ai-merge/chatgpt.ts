@@ -642,13 +642,18 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
     if (!msg) continue;
 
     const title = reasoningTitle(msg);
-    const relatedTool = relatedLogicalTool(msg, state);
-    const stageTitle =
-      relatedTool && relatedTool.id !== msg.id
-        ? logicalToolStageTitle(relatedTool, state) || title
-        : title;
-    if (stageTitle && current?.title !== stageTitle) {
-      createStage(stageTitle, msg);
+    // Only events that actually *start* visible work should advance the
+    // current stage. Tool summaries/results often arrive later with
+    // create_time=null and repeat an earlier reasoning_title; eagerly creating
+    // a stage for those produces duplicate title-only cards with no timestamp.
+    const startsVisibleStage =
+      isLogicalToolCall(msg) ||
+      (msg.role === "assistant" &&
+        msg.contentType === "text" &&
+        (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
+        Boolean(msg.text));
+    if (title && startsVisibleStage && current?.title !== title) {
+      createStage(title, msg);
     }
 
     if (isLogicalToolCall(msg)) {
@@ -724,7 +729,9 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
     }
   }
 
-  return stages.filter((stage) => stage.title || stage.items.length > 0);
+  // A reasoning_title can also be emitted on bookkeeping/result messages that
+  // have no user-visible detail. Do not render those as fake-expandable cards.
+  return stages.filter((stage) => stage.items.length > 0);
 }
 
 function visibleReasoningText(stages: AiReasoningStage[], duration?: number): string {
