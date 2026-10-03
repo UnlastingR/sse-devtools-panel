@@ -1,6 +1,6 @@
 import type { SseEvent } from "../types";
 import { detectAiProfile, type AiProfile, type AiProfileResult } from "../ai-profile";
-import type { AiConversation, MergeChannelsResult } from "./types";
+import type { AiConversation, AiMergeObservation, MergeChannelsResult } from "./types";
 import {
   createOpenAiCompatibleMergeState,
   pushOpenAiCompatible,
@@ -122,13 +122,16 @@ function pushVendor(vendor: VendorState, events: ReadonlyArray<EventLike>): void
   }
 }
 
-function snapshotVendor(vendor: VendorState | null): MergeChannelsResult {
+function snapshotVendor(
+  vendor: VendorState | null,
+  observation?: AiMergeObservation,
+): MergeChannelsResult {
   if (!vendor) return emptyChannelsResult();
   switch (vendor.profile) {
     case "openai-compatible":
       return snapshotOpenAiCompatible(vendor.state);
     case "chatgpt-web":
-      return snapshotChatgptWeb(vendor.state);
+      return snapshotChatgptWeb(vendor.state, observation);
     case "deepseek-web":
       return snapshotDeepseekWeb(vendor.state);
     case "doubao-web":
@@ -202,7 +205,7 @@ export class ConversationMergeSession {
     this.lastConsumedEvent = events.at(-1);
   }
 
-  snapshot(): AiConversation {
+  snapshot(observation?: AiMergeObservation): AiConversation {
     const detection =
       this.detection ??
       ({
@@ -212,7 +215,7 @@ export class ConversationMergeSession {
         reasoningFields: [],
       } satisfies AiProfileResult);
 
-    const merged = snapshotVendor(this.vendor);
+    const merged = snapshotVendor(this.vendor, observation);
     return {
       profile: detection.profile,
       vendorHint: detection.vendorHint,
@@ -253,8 +256,9 @@ export function syncConversationMergeSession(
   requestId: string,
   events: ReadonlyArray<EventLike>,
   url?: string,
+  observation?: AiMergeObservation,
 ): AiConversation {
   const session = getConversationMergeSession(requestId);
   session.push(events, url);
-  return session.snapshot();
+  return session.snapshot(observation);
 }

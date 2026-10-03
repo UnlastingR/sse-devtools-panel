@@ -1,5 +1,11 @@
 import type { SseEvent } from "../types";
-import type { AiEndMeta, AiReasoningStage, AiToolCall, MergeChannelsResult } from "./types";
+import type {
+  AiEndMeta,
+  AiMergeObservation,
+  AiReasoningStage,
+  AiToolCall,
+  MergeChannelsResult,
+} from "./types";
 import { isRecord, parseEventData } from "./helpers";
 
 type ChatgptMessage = {
@@ -802,6 +808,62 @@ function reasoningDurationSec(state: ChatgptWebMergeState): number | undefined {
   return Array.from(sessions.values()).reduce((sum, value) => sum + value, 0);
 }
 
+function reasoningSessionStarts(state: ChatgptWebMergeState): number[] {
+  const starts = new Set<number>();
+  for (const id of state.order) {
+    const value = state.messages.get(id)?.metadata.reasoning_start_time;
+    if (typeof value === "number" && Number.isFinite(value)) starts.add(value);
+  }
+  return Array.from(starts).sort((a, b) => a - b);
+}
+
+function reasoningSessionClosed(state: ChatgptWebMergeState, start: number): boolean {
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.metadata.reasoning_start_time !== start) continue;
+    if (
+      (typeof msg.metadata.finished_duration_sec === "number" &&
+        Number.isFinite(msg.metadata.finished_duration_sec)) ||
+      (typeof msg.metadata.reasoning_end_time === "number" &&
+        Number.isFinite(msg.metadata.reasoning_end_time)) ||
+      msg.metadata.reasoning_status === "reasoning_ended"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function inferredOpenReasoningTailSec(
+  state: ChatgptWebMergeState,
+  observation?: AiMergeObservation,
+): number | undefined {
+  if (
+    observation?.endedAtMs == null ||
+    !Number.isFinite(observation.endedAtMs) ||
+    observation.streamStatus === "streaming"
+  ) {
+    return undefined;
+  }
+  const latestStart = reasoningSessionStarts(state).at(-1);
+  if (latestStart == null || reasoningSessionClosed(state, latestStart)) return undefined;
+  const observedEndSec = observation.endedAtMs / 1000;
+  if (!Number.isFinite(observedEndSec) || observedEndSec < latestStart) return undefined;
+  return observedEndSec - latestStart;
+}
+
+function reasoningDurationInfo(
+  state: ChatgptWebMergeState,
+  observation?: AiMergeObservation,
+): { duration?: number; kind?: "measured" | "inferred" } {
+  const measured = reasoningDurationSec(state);
+  const inferredTail = inferredOpenReasoningTailSec(state, observation);
+  if (inferredTail != null) {
+    return { duration: (measured ?? 0) + inferredTail, kind: "inferred" };
+  }
+  return measured == null ? {} : { duration: measured, kind: "measured" };
+}
+
 function reasoningElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
   if (start == null || msg.createdAt == null || !Number.isFinite(msg.createdAt)) return undefined;
   return Math.max(0, msg.createdAt - start);
@@ -863,8 +925,23 @@ function measuredLogicalToolDurationSec(
   return completed == null ? undefined : Math.max(0, completed - toolStart);
 }
 
-function reasoningEndElapsedSec(state: ChatgptWebMergeState, start?: number): number | undefined {
+function reasoningEndElapsedSec(
+  state: ChatgptWebMergeState,
+  start?: number,
+  observation?: AiMergeObservation,
+): number | undefined {
   if (start == null) return undefined;
+  const latestStart = reasoningSessionStarts(state).at(-1);
+  if (
+    latestStart != null &&
+    !reasoningSessionClosed(state, latestStart) &&
+    observation?.endedAtMs != null &&
+    Number.isFinite(observation.endedAtMs) &&
+    observation.streamStatus !== "streaming"
+  ) {
+    const observedEnd = observation.endedAtMs / 1000;
+    if (observedEnd >= latestStart) return Math.max(0, observedEnd - start);
+  }
   let max: number | undefined;
   const reasoningStarts = new Set<number>();
   for (const id of state.order) {
@@ -983,7 +1060,10 @@ function reasoningStageTitle(msg: ChatgptMessage, state: ChatgptWebMergeState): 
   return "";
 }
 
-function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
+function reasoningStages(
+  state: ChatgptWebMergeState,
+  observation?: AiMergeObservation,
+): AiReasoningStage[] {
   const stages: AiReasoningStage[] = [];
   const seenTools = new Set<string>();
   const start = reasoningStartTime(state);
@@ -1178,7 +1258,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
         (orderIndex.get(b.sourceMessageId ?? "") ?? Number.MAX_SAFE_INTEGER)
       );
     });
-  const reasoningEnd = reasoningEndElapsedSec(state, start);
+  const reasoningEnd = reasoningEndElapsedSec(state, start, observation);
 
   for (let index = 0; index < activeItems.length; index += 1) {
     const item = activeItems[index]!;
@@ -1207,17 +1287,21 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       end = Math.max(end, reasoningEnd);
     }
     stage.durationSec = Math.max(0, end - stage.elapsedSec);
+    stage.durationKind = "inferred";
   });
 
   return visibleStages;
 }
 
-function visibleReasoningText(stages: AiReasoningStage[], duration?: number): string {
+function visibleReasoningText(
+  stages: AiReasoningStage[],
+  duration?: number,
+  durationKind?: "measured" | "inferred",
+): string {
   const out: string[] = [];
   for (const stage of stages) {
     const stageTitle = stage.title || "准备";
-    const stageDuration =
-      stage.durationSec == null ? "" : ` · 耗时 ${stage.durationSec.toFixed(1)}s`;
+    const stageDuration = stage.durationSec == null ? "" : ` · ≈${stage.durationSec.toFixed(1)}s`;
     out.push(`${reasoningTimePrefix(stage.elapsedSec)}阶段 · ${stageTitle}${stageDuration}`);
     for (const item of stage.items) {
       const prefix = item.kind === "commentary" ? "说明" : item.kind === "tool" ? "工具" : "摘要";
@@ -1229,7 +1313,11 @@ function visibleReasoningText(stages: AiReasoningStage[], duration?: number): st
     }
   }
 
-  if (duration != null) out.push(`总思考时间：${duration}s`);
+  if (duration != null) {
+    out.push(
+      `总思考时间：${durationKind === "inferred" ? `≈${duration.toFixed(1)}s` : `${duration}s`}`,
+    );
+  }
   return out.join("\n\n");
 }
 
@@ -1353,16 +1441,20 @@ export function pushChatgptWeb(
   }
 }
 
-export function snapshotChatgptWeb(state: ChatgptWebMergeState): MergeChannelsResult {
-  const stages = reasoningStages(state);
-  const duration = reasoningDurationSec(state);
+export function snapshotChatgptWeb(
+  state: ChatgptWebMergeState,
+  observation?: AiMergeObservation,
+): MergeChannelsResult {
+  const stages = reasoningStages(state, observation);
+  const duration = reasoningDurationInfo(state, observation);
   return {
     channels: {
       content: finalAssistantText(state),
-      reasoning: visibleReasoningText(stages, duration),
+      reasoning: visibleReasoningText(stages, duration.duration, duration.kind),
       tools: toolCalls(state),
       reasoningStages: stages,
-      reasoningDurationSec: duration,
+      reasoningDurationSec: duration.duration,
+      reasoningDurationKind: duration.kind,
     },
     endMeta: state.endMeta,
     chunkCount: state.chunkCount,
@@ -1371,8 +1463,9 @@ export function snapshotChatgptWeb(state: ChatgptWebMergeState): MergeChannelsRe
 
 export function mergeChatgptWeb(
   events: ReadonlyArray<Pick<SseEvent, "data" | "event">>,
+  observation?: AiMergeObservation,
 ): MergeChannelsResult {
   const state = createChatgptWebMergeState();
   pushChatgptWeb(state, events);
-  return snapshotChatgptWeb(state);
+  return snapshotChatgptWeb(state, observation);
 }

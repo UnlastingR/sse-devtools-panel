@@ -9,6 +9,7 @@ import { elConversationBody, elConversationPlaceholder } from "../core/dom";
 import { escapeHtml } from "../core/format";
 import { renderIcon } from "../core/icons";
 import { planTextPaneUpdate } from "./conversation-text";
+import { ConversationScrollMemory } from "./conversation-scroll-memory";
 import {
   CONV_ROW_HEIGHT_PX,
   computeConvVirtualWindow,
@@ -48,6 +49,7 @@ let lastToolsFingerprint = "";
 let lastReasoningFingerprint = "";
 let latestMerged: AiConversation | null = null;
 let activeVirtualPane: VirtualTextPane | null = null;
+const conversationScrollMemory = new ConversationScrollMemory();
 
 export type RenderConversationOptions = {
   copyText: (text: string, notify?: boolean) => Promise<void>;
@@ -67,6 +69,36 @@ export function resetConversationView(): void {
   lastToolsFingerprint = "";
   lastReasoningFingerprint = "";
   latestMerged = null;
+  conversationScrollMemory.clear();
+}
+
+function rememberConversationScroll(
+  streamId: string | null,
+  channel: ConversationChannel | null,
+  pane?: HTMLElement | null,
+): void {
+  if (!streamId || !channel || !pane) return;
+  conversationScrollMemory.remember(streamId, channel, pane.scrollTop);
+}
+
+function rememberCurrentConversationScroll(): void {
+  const pane = elConversationBody.querySelector<HTMLElement>(".conversation-pane");
+  rememberConversationScroll(lastRenderedStreamId, lastRenderedChannel, pane);
+}
+
+function restoreConversationScroll(
+  streamId: string,
+  channel: ConversationChannel,
+  pane: HTMLElement,
+): void {
+  const remembered = conversationScrollMemory.restore(
+    streamId,
+    channel,
+    pane.scrollHeight,
+    pane.clientHeight,
+  );
+  if (remembered == null) return;
+  pane.scrollTop = remembered;
 }
 
 function disposeVirtualTextPane(): void {
@@ -79,6 +111,7 @@ function disposeVirtualTextPane(): void {
 function onVirtualScroll(): void {
   if (!activeVirtualPane) return;
   const pinnedScrollTop = activeVirtualPane.root.scrollTop;
+  rememberConversationScroll(lastRenderedStreamId, lastRenderedChannel, activeVirtualPane.root);
   paintVirtualWindow(activeVirtualPane, false);
   if (activeVirtualPane.root.scrollTop !== pinnedScrollTop) {
     activeVirtualPane.root.scrollTop = pinnedScrollTop;
@@ -201,6 +234,8 @@ function buildConversationFingerprint(
     merged.channels.reasoning.length,
     merged.channels.tools.length,
     merged.channels.tools.reduce((n, tc) => n + tc.arguments.length, 0),
+    merged.channels.reasoningDurationSec ?? "",
+    merged.channels.reasoningDurationKind ?? "",
     merged.endMeta.finishReason ?? "",
     merged.endMeta.thinkingEffort ?? "",
     merged.chunkCount,
@@ -221,9 +256,10 @@ function reasoningFingerprint(merged: AiConversation): string {
   const stages = merged.channels.reasoningStages ?? [];
   return [
     merged.channels.reasoningDurationSec ?? "",
+    merged.channels.reasoningDurationKind ?? "",
     ...stages.map(
       (stage) =>
-        `${stage.id}:${stage.title}:${stage.elapsedSec ?? ""}:${stage.durationSec ?? ""}:${stage.items
+        `${stage.id}:${stage.title}:${stage.elapsedSec ?? ""}:${stage.durationSec ?? ""}:${stage.durationKind ?? ""}:${stage.items
           .map(
             (item) =>
               `${item.kind}:${item.elapsedSec ?? ""}:${item.durationSec ?? ""}:${item.durationKind ?? ""}:${item.toolId ?? ""}:${item.text}`,
@@ -306,9 +342,7 @@ function createReasoningPane(
     const stageDuration = document.createElement("span");
     stageDuration.className = "reasoning-stage-duration";
     stageDuration.textContent =
-      stage.durationSec == null
-        ? ""
-        : `${t("conversationReasoningDuration")} ${preciseDurationLabel(stage.durationSec)}`;
+      stage.durationSec == null ? "" : `≈${preciseDurationLabel(stage.durationSec)}`;
 
     const counts = document.createElement("span");
     counts.className = "reasoning-stage-counts";
@@ -378,6 +412,7 @@ function createReasoningPane(
           if (toolIndex >= 0) {
             text.title = t("conversationReasoningJumpToTool");
             text.addEventListener("click", () => {
+              rememberCurrentConversationScroll();
               if (toolsExpandStreamId !== streamId) {
                 toolsExpandStreamId = streamId;
                 toolsExpandedIndexes = new Set<number>();
@@ -428,7 +463,11 @@ function createReasoningPane(
   if (merged.channels.reasoningDurationSec != null) {
     const total = document.createElement("div");
     total.className = "reasoning-total-duration";
-    total.textContent = `${t("conversationReasoningTotalTime")}: ${durationLabel(merged.channels.reasoningDurationSec)}`;
+    const value =
+      merged.channels.reasoningDurationKind === "inferred"
+        ? `≈${preciseDurationLabel(merged.channels.reasoningDurationSec)}`
+        : durationLabel(merged.channels.reasoningDurationSec);
+    total.textContent = `${t("conversationReasoningTotalTime")}: ${value}`;
     pane.appendChild(total);
   }
   return pane;
@@ -837,6 +876,7 @@ function mountFullConversation(
       if (e.button !== 0) return;
       e.preventDefault();
       if (conversationChannel === ch) return;
+      rememberCurrentConversationScroll();
       conversationChannel = ch;
       conversationFingerprint = "";
       lastRenderedChannelText = "";
@@ -873,6 +913,8 @@ function mountFullConversation(
     // Width is only known after the pane is in an active layout tree.
     setVirtualText(virtual, text, !text && conversationChannel !== "meta");
   }
+  restoreConversationScroll(record.requestId, conversationChannel, pane);
+  if (virtual) paintVirtualWindow(virtual, true);
 
   lastRenderedStreamId = record.requestId;
   lastRenderedChannel = conversationChannel;
@@ -905,7 +947,15 @@ export function renderConversation(
     return;
   }
 
-  const merged = syncConversationMergeSession(record.requestId, record.events, record.url);
+  if (lastRenderedStreamId && lastRenderedStreamId !== record.requestId) {
+    rememberCurrentConversationScroll();
+  }
+
+  const merged = syncConversationMergeSession(record.requestId, record.events, record.url, {
+    endedAtMs: record.endedAt,
+    streamStatus: record.streamStatus,
+    closeReason: record.closeReason,
+  });
   latestMerged = merged;
 
   const fp = buildConversationFingerprint(merged, conversationChannel);

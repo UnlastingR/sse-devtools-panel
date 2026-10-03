@@ -81,10 +81,14 @@ function recap(id: string, parentId: string, reasoningStart: number, reasoningEn
   );
 }
 
-function merged(events: ReturnType<typeof ev>[]) {
+function merged(
+  events: ReturnType<typeof ev>[],
+  observation?: Parameters<typeof mergeAiConversation>[2],
+) {
   return mergeAiConversation(
     [ev('"v1"', "delta_encoding"), ...events],
     "https://chatgpt.com/backend-api/f/conversation",
+    observation,
   );
 }
 
@@ -371,7 +375,8 @@ describe("ChatGPT reasoning timing", () => {
     expect(note?.durationSec).toBeCloseTo(7.5, 5);
     expect(note?.durationKind).toBe("inferred");
     expect(stage?.durationSec).toBeCloseTo(7.5, 5);
-    expect(result.channels.reasoning).toContain("阶段 · 收尾 · 耗时 7.5s");
+    expect(stage?.durationKind).toBe("inferred");
+    expect(result.channels.reasoning).toContain("阶段 · 收尾 · ≈7.5s");
   });
 
   it("covers the observed tool-tool-commentary shape inside one stage", () => {
@@ -464,5 +469,117 @@ describe("ChatGPT reasoning timing", () => {
     const stage = result.channels.reasoningStages?.find((value) => value.title === "等待工具");
     expect(item?.durationSec).toBe(10);
     expect(stage?.durationSec).toBe(10);
+  });
+
+  it("infers the open reasoning tail from a terminal network error", () => {
+    const completed = [
+      [1791022728.4343805, 1791023103.1473522, 374],
+      [1791023103.170502, 1791023227.5134134, 124],
+      [1791023227.6586292, 1791023290.472696, 62],
+      [1791023290.4940233, 1791023364.6687334, 74],
+      [1791023364.8302653, 1791023420.9227853, 56],
+      [1791023420.9584706, 1791024289.0792053, 868],
+    ] as const;
+    const events = completed.map(([start, end, duration], index) =>
+      add(
+        assistant(
+          `completed-${index}`,
+          end,
+          "all",
+          {
+            reasoning_start_time: start,
+            reasoning_end_time: end,
+            finished_duration_sec: duration,
+            reasoning_status: "reasoning_ended",
+          },
+          { content_type: "reasoning_recap", content: `思考了 ${duration}s` },
+          null,
+        ),
+      ),
+    );
+    events.push(
+      add(
+        commentary("open-tail", 1791024384.490473, "最后一段仍在工作", {
+          reasoning_start_time: 1791024289.1259665,
+          reasoning_title: "完善会话滚动位置持久化",
+        }),
+      ),
+    );
+
+    const result = merged(events, {
+      endedAtMs: 1791024401842,
+      streamStatus: "error",
+      closeReason: "error",
+    });
+    const note = findItem(result, (text) => text === "最后一段仍在工作");
+    const stage = result.channels.reasoningStages?.find(
+      (value) => value.title === "完善会话滚动位置持久化",
+    );
+
+    expect(result.channels.reasoningDurationSec).toBeCloseTo(1670.7160335, 5);
+    expect(result.channels.reasoningDurationKind).toBe("inferred");
+    expect(note?.durationSec).toBeCloseTo(17.351527, 5);
+    expect(note?.durationKind).toBe("inferred");
+    expect(stage?.durationSec).toBeCloseTo(17.351527, 5);
+    expect(result.channels.reasoning).toContain("总思考时间：≈1670.7s");
+  });
+
+  it("does not infer an open reasoning tail while the transport is still streaming", () => {
+    const result = merged(
+      [
+        add(
+          assistant(
+            "completed",
+            110,
+            "all",
+            {
+              reasoning_start_time: 100,
+              reasoning_end_time: 110,
+              finished_duration_sec: 10,
+              reasoning_status: "reasoning_ended",
+            },
+            { content_type: "reasoning_recap", content: "思考了 10s" },
+            null,
+          ),
+        ),
+        add(
+          commentary("open", 120, "仍在继续", {
+            reasoning_start_time: 115,
+            reasoning_title: "继续",
+          }),
+        ),
+      ],
+      { endedAtMs: 130000, streamStatus: "streaming" },
+    );
+
+    expect(result.channels.reasoningDurationSec).toBe(10);
+    expect(result.channels.reasoningDurationKind).toBe("measured");
+  });
+
+  it("prefers a server-closed latest session over the transport boundary", () => {
+    const result = merged(
+      [
+        add(
+          assistant(
+            "closed",
+            125,
+            "all",
+            {
+              reasoning_start_time: 115,
+              reasoning_end_time: 125,
+              finished_duration_sec: 10,
+              reasoning_status: "reasoning_ended",
+            },
+            { content_type: "reasoning_recap", content: "思考了 10s" },
+            null,
+          ),
+        ),
+      ],
+      { endedAtMs: 130000, streamStatus: "error", closeReason: "error" },
+    );
+
+    expect(result.channels.reasoningDurationSec).toBe(10);
+    expect(result.channels.reasoningDurationKind).toBe("measured");
+    expect(result.channels.reasoning).toContain("总思考时间：10s");
   });
 });

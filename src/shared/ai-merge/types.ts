@@ -44,6 +44,8 @@ export interface AiReasoningStage {
   elapsedSec?: number;
   /** Independent wall-clock coverage of this stage. Stages may overlap. */
   durationSec?: number;
+  /** Stage boundaries are inferred from the reasoning timeline. */
+  durationKind?: "inferred";
   items: AiReasoningItem[];
 }
 
@@ -54,6 +56,16 @@ export interface AiConversationChannels {
   /** Structured ChatGPT reasoning timeline used by the collapsible UI. */
   reasoningStages?: AiReasoningStage[];
   reasoningDurationSec?: number;
+  /** Whether the total reasoning duration is fully server-measured or includes an inferred tail. */
+  reasoningDurationKind?: "measured" | "inferred";
+}
+
+export interface AiMergeObservation {
+  /** Browser-observed transport end time in Unix milliseconds. */
+  endedAtMs?: number;
+  /** Physical/logical stream state at the time of the snapshot. */
+  streamStatus?: "streaming" | "done" | "error";
+  closeReason?: "complete" | "abort" | "error" | "http_error";
 }
 
 export interface AiEndMeta {

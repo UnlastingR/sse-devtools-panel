@@ -1,5 +1,5 @@
 import type { SseEvent } from "../types";
-import type { AiConversation } from "./types";
+import type { AiConversation, AiMergeObservation } from "./types";
 import { ConversationMergeSession } from "./session";
 
 export type {
@@ -7,6 +7,7 @@ export type {
   AiConversationChannels,
   AiEndMeta,
   AiConversation,
+  AiMergeObservation,
   MergeChannelsResult,
 } from "./types";
 
@@ -91,10 +92,11 @@ export {
 export function mergeAiConversation(
   events: ReadonlyArray<Pick<SseEvent, "data" | "event">>,
   url?: string,
+  observation?: AiMergeObservation,
 ): AiConversation {
   const session = new ConversationMergeSession();
   session.push(events, url);
-  return session.snapshot();
+  return session.snapshot(observation);
 }
 
 export function conversationHasContent(t: AiConversation): boolean {
