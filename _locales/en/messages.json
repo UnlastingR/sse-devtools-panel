@@ -560,13 +560,13 @@
     "message": "Event arrival timeline"
   },
   "timelineTrackHint": {
-    "message": "Each tick marks one event. Red ticks had ≥250ms wait before arrival; blue is selected. Click to open."
+    "message": "Each tick marks one event. Blue: <500ms wait; yellow: 500ms–1m; red: ≥1m. The selected event is outlined. Click to open."
   },
   "timelineGapHistogram": {
     "message": "Wait-time distribution between events"
   },
   "timelineGapHistogramHint": {
-    "message": "X-axis: how long you waited between two events. Y-axis: how many times that wait length occurred. Yellow bars (≥500ms) are longer stalls."
+    "message": "X-axis: wait between two events. Y-axis: occurrences. Blue: <500ms; yellow: 500ms–1m; red: ≥1m."
   },
   "timelineGapHistogramX": {
     "message": "Wait between events →"

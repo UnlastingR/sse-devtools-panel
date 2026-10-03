@@ -560,13 +560,13 @@
     "message": "事件到达时间线"
   },
   "timelineTrackHint": {
-    "message": "每个刻度对应一个事件。红色表示到达前等待 ≥250ms；蓝色为当前选中。点击可打开。"
+    "message": "每个刻度对应一个事件。蓝色：等待 <500ms；黄色：500ms–1m；红色：≥1m。当前选中事件使用描边突出。点击可打开。"
   },
   "timelineGapHistogram": {
     "message": "相邻事件等待时长分布"
   },
   "timelineGapHistogramHint": {
-    "message": "横轴：两次事件之间等了多久；纵轴：这种等待发生了多少次。黄色柱（≥500ms）表示较长停顿。"
+    "message": "横轴：两次事件之间等了多久；纵轴：这种等待发生了多少次。蓝色：<500ms；黄色：500ms–1m；红色：≥1m。"
   },
   "timelineGapHistogramX": {
     "message": "两次事件之间的等待 →"

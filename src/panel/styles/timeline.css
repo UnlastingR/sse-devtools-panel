@@ -78,10 +78,16 @@
 }
 
 .timeline-track-svg .tick.is-selected {
-  fill: var(--accent-strong);
+  stroke: var(--text);
+  stroke-width: 2;
+  paint-order: stroke;
 }
 
-.timeline-track-svg .tick.is-stall {
+.timeline-track-svg .tick.is-warning {
+  fill: var(--warning);
+}
+
+.timeline-track-svg .tick.is-critical {
   fill: var(--danger);
 }
 

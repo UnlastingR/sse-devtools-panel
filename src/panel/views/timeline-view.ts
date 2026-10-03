@@ -12,7 +12,8 @@ import { elTimelineBody, elTimelinePlaceholder } from "../core/dom";
 import { escapeHtml, formatGapBinLabel, formatMetricMs } from "../core/format";
 import { ensureStreamMetrics } from "../features/stream-metrics";
 
-export const TIMELINE_STALL_MS = 250;
+export const TIMELINE_WARN_MS = 500;
+export const TIMELINE_CRITICAL_MS = 60_000;
 
 export type RenderTimelineOptions = {
   selectedEventIndex: number | null;
@@ -206,14 +207,16 @@ export function renderTimeline(
 
   for (const mark of marks) {
     const x = padL + (mark.offsetMs / spanMs) * plotW;
-    const isStall =
-      typeof mark.gapFromPrevMs === "number" && mark.gapFromPrevMs >= TIMELINE_STALL_MS;
+    const gapMs = mark.gapFromPrevMs ?? 0;
+    const severityClass =
+      gapMs >= TIMELINE_CRITICAL_MS
+        ? " is-critical"
+        : gapMs >= TIMELINE_WARN_MS
+          ? " is-warning"
+          : "";
     const isSelected = options.selectedEventIndex === mark.index;
     const tick = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    tick.setAttribute(
-      "class",
-      `tick${isSelected ? " is-selected" : ""}${isStall && !isSelected ? " is-stall" : ""}`,
-    );
+    tick.setAttribute("class", `tick${severityClass}${isSelected ? " is-selected" : ""}`);
     tick.setAttribute("x", String(x - 2));
     tick.setAttribute("y", String(trackY - 14));
     tick.setAttribute("width", "4");
