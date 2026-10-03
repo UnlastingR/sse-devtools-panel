@@ -95,6 +95,31 @@ export function streamHasExplicitCompletion(
       ) {
         return true;
       }
+
+      // ChatGPT can abort the underlying fetch during cleanup before a later
+      // [DONE] frame becomes observable to the cloned reader. A completed
+      // message patch is already an application-level terminal signal.
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const row = parsed as Record<string, unknown>;
+        const patches = row.o === "patch" && Array.isArray(row.v) ? row.v : [];
+        let finished = false;
+        let endTurn = false;
+        for (const patch of patches) {
+          if (!patch || typeof patch !== "object" || Array.isArray(patch)) continue;
+          const item = patch as Record<string, unknown>;
+          if (
+            item.p === "/message/status" &&
+            item.o === "replace" &&
+            item.v === "finished_successfully"
+          ) {
+            finished = true;
+          }
+          if (item.p === "/message/end_turn" && item.o === "replace" && item.v === true) {
+            endTurn = true;
+          }
+        }
+        if (finished && endTurn) return true;
+      }
     } catch {
       // Ignore malformed/non-JSON event payloads.
     }

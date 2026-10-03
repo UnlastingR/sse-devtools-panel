@@ -9,6 +9,7 @@ type ChatgptMessage = {
   channel?: string | null;
   contentType?: string;
   text: string;
+  reasoningSummary: string;
   metadata: Record<string, unknown>;
   status?: string;
   endTurn?: boolean | null;
@@ -24,14 +25,31 @@ export type ChatgptWebMergeState = {
   chunkCount: number;
 };
 
-function messageText(content: unknown): { contentType?: string; text: string } {
-  if (!isRecord(content)) return { text: "" };
+function messageText(content: unknown): {
+  contentType?: string;
+  text: string;
+  reasoningSummary: string;
+} {
+  if (!isRecord(content)) return { text: "", reasoningSummary: "" };
   const contentType = typeof content.content_type === "string" ? content.content_type : undefined;
   const parts = Array.isArray(content.parts) ? content.parts : [];
   const first = parts.length > 0 && typeof parts[0] === "string" ? parts[0] : "";
-  if (first) return { contentType, text: first };
-  if (typeof content.text === "string") return { contentType, text: content.text };
-  return { contentType, text: "" };
+  if (first) return { contentType, text: first, reasoningSummary: "" };
+  if (typeof content.text === "string") {
+    return { contentType, text: content.text, reasoningSummary: "" };
+  }
+  if (contentType === "reasoning_recap" && typeof content.content === "string") {
+    return { contentType, text: "", reasoningSummary: content.content };
+  }
+  if (contentType === "thoughts" && Array.isArray(content.thoughts)) {
+    const summaries = content.thoughts
+      .map((thought) =>
+        isRecord(thought) && typeof thought.summary === "string" ? thought.summary.trim() : "",
+      )
+      .filter(Boolean);
+    return { contentType, text: "", reasoningSummary: summaries.join("\n") };
+  }
+  return { contentType, text: "", reasoningSummary: "" };
 }
 
 function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
@@ -49,6 +67,7 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
       typeof raw.channel === "string" || raw.channel === null ? raw.channel : existing?.channel,
     contentType: parsedContent.contentType ?? existing?.contentType,
     text: parsedContent.text || existing?.text || "",
+    reasoningSummary: parsedContent.reasoningSummary || existing?.reasoningSummary || "",
     metadata: { ...(existing?.metadata ?? {}), ...metadata },
     status: typeof raw.status === "string" ? raw.status : existing?.status,
     endTurn:
@@ -152,16 +171,46 @@ function ingestDelta(parsed: Record<string, unknown>, state: ChatgptWebMergeStat
   state.chunkCount++;
 }
 
-function visibleAssistantText(state: ChatgptWebMergeState): string {
+function finalAssistantText(state: ChatgptWebMergeState): string {
   const out: string[] = [];
   for (const id of state.order) {
     const msg = state.messages.get(id);
     if (!msg || msg.role !== "assistant" || !msg.text) continue;
     if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
     if (msg.recipient && msg.recipient !== "all") continue;
-    if (msg.contentType && msg.contentType !== "text") continue;
-    if (msg.channel && msg.channel !== "commentary" && msg.channel !== "final") continue;
+    if (msg.contentType !== "text") continue;
+    const isFinal = msg.channel === "final" || (msg.channel == null && msg.endTurn === true);
+    if (!isFinal) continue;
     out.push(msg.text);
+  }
+  return out.join("\n\n");
+}
+
+function visibleReasoningText(state: ChatgptWebMergeState): string {
+  const out: string[] = [];
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.role !== "assistant") continue;
+    if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
+    if (msg.recipient && msg.recipient !== "all") continue;
+
+    // User-visible intermediate commentary belongs in the reasoning pane,
+    // not in the final answer. Never expose hidden thought content; for
+    // `thoughts` only the server-provided summary is retained.
+    if (
+      msg.contentType === "text" &&
+      (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
+      msg.text
+    ) {
+      out.push(msg.text);
+      continue;
+    }
+    if (
+      (msg.contentType === "reasoning_recap" || msg.contentType === "thoughts") &&
+      msg.reasoningSummary
+    ) {
+      out.push(msg.reasoningSummary);
+    }
   }
   return out.join("\n\n");
 }
@@ -172,13 +221,16 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
     const msg = state.messages.get(id);
     if (!msg || msg.role !== "assistant") continue;
     if (!msg.recipient || msg.recipient === "all") continue;
-    if (msg.contentType !== "code") continue;
     const payload = msg.metadata.connector_tool_payload;
+    let args = typeof payload === "string" ? payload : msg.text || "";
+    if (!args && isRecord(msg.metadata.search_model_queries)) {
+      args = JSON.stringify(msg.metadata.search_model_queries);
+    }
     out.push({
       index: out.length,
       id: msg.id,
       name: msg.recipient,
-      arguments: typeof payload === "string" ? payload : msg.text || "{}",
+      arguments: args || "{}",
     });
   }
   return out;
@@ -220,8 +272,8 @@ export function pushChatgptWeb(
 export function snapshotChatgptWeb(state: ChatgptWebMergeState): MergeChannelsResult {
   return {
     channels: {
-      content: visibleAssistantText(state),
-      reasoning: "",
+      content: finalAssistantText(state),
+      reasoning: visibleReasoningText(state),
       tools: toolCalls(state),
     },
     endMeta: state.endMeta,

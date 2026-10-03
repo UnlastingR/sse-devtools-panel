@@ -40,7 +40,7 @@ describe("ai-merge", () => {
           JSON.stringify({
             v: {
               message: {
-                id: "progress",
+                id: "hidden-progress",
                 author: { role: "assistant" },
                 content: { content_type: "text", parts: ["Cam"] },
                 metadata: { resolved_model_slug: "gpt-5-6-thinking" },
@@ -72,6 +72,39 @@ describe("ai-merge", () => {
             o: "add",
             v: {
               message: {
+                id: "progress",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: ["正在检查"] },
+                metadata: { is_thinking_preamble_message: true },
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "。" }), "delta"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "tool-call",
+                author: { role: "assistant" },
+                content: { content_type: "code", text: '{"query":"status"}' },
+                metadata: {},
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
                 id: "final",
                 author: { role: "assistant" },
                 content: { content_type: "text", parts: ["`a"] },
@@ -83,10 +116,7 @@ describe("ai-merge", () => {
           }),
           "delta",
         ),
-        ev(
-          JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "istudio" }),
-          "delta",
-        ),
+        ev(JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "istudio" }), "delta"),
         ev(JSON.stringify({ v: "-to-api`" }), "delta"),
         ev(
           JSON.stringify({
@@ -112,8 +142,41 @@ describe("ai-merge", () => {
         `chatgpt content: ${t.channels.content}`,
       );
       assert(!t.channels.content.includes("Camoufox"), "hidden commentary must be excluded");
+      assert(t.channels.reasoning === "正在检查。", `chatgpt reasoning: ${t.channels.reasoning}`);
+      assert(t.channels.tools.length === 1, `chatgpt tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.name === "functions.exec", "chatgpt tool name");
       assert(t.endMeta.model === "gpt-5-6-thinking", "chatgpt model");
       assert(t.endMeta.finishReason === "stop", "chatgpt finish");
+    }
+
+    {
+      const fileEvents = [
+        ev(
+          JSON.stringify({
+            file_id: "file_1",
+            event: "file.processing.started",
+            progress: 0,
+          }),
+        ),
+        ev(
+          JSON.stringify({
+            file_id: "file_1",
+            event: "file.processing.completed",
+            progress: 100,
+          }),
+        ),
+      ];
+      const fileStream = mergeAiConversation(
+        fileEvents,
+        "https://chatgpt.com/backend-api/files/process_upload_stream",
+      );
+      assert(fileStream.profile === "generic", `file stream profile: ${fileStream.profile}`);
+
+      const resume = detectAiProfile(
+        [ev("v1", "delta_encoding")],
+        "https://chatgpt.com/backend-api/f/conversation/resume",
+      );
+      assert(resume.profile !== "chatgpt-web", "resume is intentionally not handled yet");
     }
 
     {

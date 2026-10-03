@@ -5,6 +5,7 @@ import {
   type SseSpecWarningKind,
 } from "../../shared/sse-spec";
 import type { StreamRecord } from "../../shared/types";
+import { isChatgptConversationUrl } from "../../shared/ai-profile";
 
 export type StreamAnomalyKind =
   "empty-data" | "json-parse-failed" | "duplicate-id" | "oversized-packet";
@@ -16,6 +17,7 @@ export type StreamAnomaly = {
 };
 
 export const OVERSIZED_PACKET_THRESHOLD = 16_000;
+const CHATGPT_CONVERSATION_OVERSIZED_PACKET_THRESHOLD = 128_000;
 
 const anomalyCache = new Map<string, { eventCount: number; anomalies: StreamAnomaly[] }>();
 const specWarningCache = new Map<
@@ -55,6 +57,9 @@ export function scanStreamAnomalies(record: StreamRecord): StreamAnomaly[] {
   }
   const seenIds = new Set<string>();
   const anomalies: StreamAnomaly[] = [];
+  const oversizedThreshold = isChatgptConversationUrl(record.url)
+    ? CHATGPT_CONVERSATION_OVERSIZED_PACKET_THRESHOLD
+    : OVERSIZED_PACKET_THRESHOLD;
   for (const ev of record.events) {
     const data = ev.data ?? "";
     if (!data.trim()) {
@@ -87,7 +92,7 @@ export function scanStreamAnomalies(record: StreamRecord): StreamAnomaly[] {
         seenIds.add(ev.id);
       }
     }
-    if (data.length >= OVERSIZED_PACKET_THRESHOLD) {
+    if (data.length >= oversizedThreshold) {
       anomalies.push({
         kind: "oversized-packet",
         eventIndex: ev.index,

@@ -45,10 +45,22 @@ describe("stream-timing", () => {
       { gapMs: 60_000 },
       { gapMs: 180_000 },
     ]);
-    assert(longHist.some((b) => b.label === "10000–30000" && b.count === 1), "10s boundary");
-    assert(longHist.some((b) => b.label === "30000–60000" && b.count === 1), "30s boundary");
-    assert(longHist.some((b) => b.label === "60000–180000" && b.count === 1), "1min boundary");
-    assert(longHist.some((b) => b.label === "180000+" && b.count === 1), "3min boundary");
+    assert(
+      longHist.some((b) => b.label === "10000–30000" && b.count === 1),
+      "10s boundary",
+    );
+    assert(
+      longHist.some((b) => b.label === "30000–60000" && b.count === 1),
+      "30s boundary",
+    );
+    assert(
+      longHist.some((b) => b.label === "60000–180000" && b.count === 1),
+      "1min boundary",
+    );
+    assert(
+      longHist.some((b) => b.label === "180000+" && b.count === 1),
+      "3min boundary",
+    );
 
     const marks = buildTimelineMarks(events, 1000);
     assert(marks.length === 4, "marks");

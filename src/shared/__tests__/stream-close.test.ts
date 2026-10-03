@@ -47,6 +47,21 @@ describe("stream-close", () => {
       "ChatGPT terminal marker",
     );
     assert(streamHasExplicitCompletion([{ data: "[DONE]" }]), "DONE terminal marker");
+    assert(
+      streamHasExplicitCompletion([
+        {
+          data: JSON.stringify({
+            p: "",
+            o: "patch",
+            v: [
+              { p: "/message/status", o: "replace", v: "finished_successfully" },
+              { p: "/message/end_turn", o: "replace", v: true },
+            ],
+          }),
+        },
+      ]),
+      "ChatGPT completed message patch",
+    );
     assert(!streamHasExplicitCompletion([{ data: '{"type":"message_marker"}' }]), "not terminal");
   });
 });

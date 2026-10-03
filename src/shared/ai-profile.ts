@@ -160,14 +160,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function isChatgptHost(url: string | undefined): boolean {
+/** Only the ChatGPT Web conversation stream currently supported by the adapter. */
+export function isChatgptConversationUrl(url: string | undefined): boolean {
   if (!url) return false;
   try {
-    const host = new URL(url, "https://dummy.local").hostname.toLowerCase();
-    return host === "chatgpt.com" || host.endsWith(".chatgpt.com");
+    const parsed = new URL(url, "https://dummy.local");
+    const host = parsed.hostname.toLowerCase();
+    return (
+      (host === "chatgpt.com" || host.endsWith(".chatgpt.com")) &&
+      parsed.pathname === "/backend-api/f/conversation"
+    );
   } catch {
-    const text = url.toLowerCase();
-    return text.includes("chatgpt.com");
+    return /chatgpt\.com\/backend-api\/f\/conversation(?:[?#]|$)/i.test(url);
   }
 }
 
@@ -412,11 +416,13 @@ export function detectAiProfile(
   let yuanbaoHits = 0;
   let anthropicHits = 0;
   const sampleLimit = Math.min(events.length, 80);
-  const chatgptHost = isChatgptHost(url);
+  const chatgptConversation = isChatgptConversationUrl(url);
 
   for (let i = 0; i < sampleLimit; i++) {
     const ev = events[i];
-    if (ev.event === "delta_encoding" && ev.data.trim() === "v1") chatgptHits += 6;
+    if (chatgptConversation && ev.event === "delta_encoding" && ev.data.trim() === "v1") {
+      chatgptHits += 6;
+    }
     if (DEEPSEEK_WEB_EVENTS.has(ev.event)) deepseekHits += 2;
     if (DOUBAO_WEB_EVENTS.has(ev.event)) doubaoHits += 2;
     if (
@@ -430,7 +436,7 @@ export function detectAiProfile(
 
     const parsed = tryParseJson(ev.data);
     if (parsed == null) continue;
-    if (isChatgptWebChunk(parsed, ev.event)) chatgptHits += 2;
+    if (chatgptConversation && isChatgptWebChunk(parsed, ev.event)) chatgptHits += 2;
     if (isOpenAiCompatibleChunk(parsed)) {
       openaiHits++;
       collectReasoningFields(parsed, reasoningFields);
@@ -487,7 +493,7 @@ export function detectAiProfile(
   // chatgpt.com uses a private delta_encoding:v1 protocol whose compact
   // {p,o,v}/{v} patches overlap DeepSeek's web patch shape. Host + one
   // ChatGPT-specific signal is authoritative and avoids that false positive.
-  if (chatgptHost && chatgptHits >= 1) {
+  if (chatgptConversation && chatgptHits >= 1) {
     profile = "chatgpt-web";
   }
 

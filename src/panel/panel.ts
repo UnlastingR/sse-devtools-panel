@@ -397,19 +397,6 @@ function onEnd(payload: StreamEndPayload): void {
 function onError(payload: StreamErrorPayload): void {
   const record = state.streams.get(payload.requestId);
   if (!record) return;
-  const parser = state.parsers.get(payload.requestId);
-  if (parser) {
-    const prevAt = record.events.length
-      ? record.events[record.events.length - 1]!.receivedAt
-      : undefined;
-    const rest = stampEvents(parser.flush(), prevAt);
-    if (rest.length) {
-      record.events.push(...rest);
-      const latestId = latestEventIdFromEvents(rest);
-      if (latestId) record.lastEventId = latestId;
-      getConversationMergeSession(payload.requestId).push(record.events, record.url);
-    }
-  }
 
   // Chat clients commonly abort/cancel the underlying fetch after emitting an
   // application-level terminal marker. Treat that cleanup abort as success.
