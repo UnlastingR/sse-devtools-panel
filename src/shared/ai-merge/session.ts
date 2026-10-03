@@ -50,7 +50,7 @@ import {
   type YuanbaoWebMergeState,
 } from "./yuanbao";
 
-type EventLike = Pick<SseEvent, "data" | "event">;
+type EventLike = Pick<SseEvent, "data" | "event"> & Partial<Pick<SseEvent, "receivedAt">>;
 
 type VendorState =
   | { profile: "openai-compatible"; state: OpenAiCompatibleMergeState }

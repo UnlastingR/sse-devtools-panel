@@ -886,14 +886,23 @@
   "requestResponseHeadersEmpty": {
     "message": "未捕获到响应头（EventSource / 临时建连阶段）。"
   },
+  "requestWebSocketResponseHeadersEmpty": {
+    "message": "页面 JavaScript 无法读取 WebSocket 握手响应头，因此这里无法捕获。"
+  },
   "requestHeadersTitle": {
     "message": "请求头"
   },
   "requestHeadersHint": {
     "message": "来自页面 JS（fetch/XHR）尽力采集；浏览器自动附加的头可能缺失。敏感值显示为 [REDACTED]。"
   },
+  "requestWebSocketHeadersHint": {
+    "message": "WebSocket API 可读取连接 URL 和消息，但不会暴露浏览器生成的握手请求头。URL 中的敏感凭据和可续传 topic token 会在保存/导出前脱敏。"
+  },
   "requestHeadersEmpty": {
     "message": "未捕获到该流的请求头。"
+  },
+  "requestWebSocketHeadersEmpty": {
+    "message": "页面 JavaScript 无法读取 WebSocket 握手请求头。"
   },
   "requestHeaderName": {
     "message": "名称"

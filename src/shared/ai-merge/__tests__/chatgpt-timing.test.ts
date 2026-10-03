@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { mergeAiConversation } from "../index";
 
-function ev(data: string, event = "delta") {
-  return { data, event };
+function ev(data: string, event = "delta", receivedAt?: number) {
+  return { data, event, ...(receivedAt == null ? {} : { receivedAt }) };
 }
 
 function add(message: Record<string, unknown>) {
@@ -319,6 +319,59 @@ describe("ChatGPT reasoning timing", () => {
     const web = findItem(result, (text) => text.includes("web.run · SEARCH"));
     expect(web?.durationSec).toBe(4);
     expect(web?.durationKind).toBe("inferred");
+  });
+
+  it("uses browser receive timestamps for Work messages with null create_time", () => {
+    const start = 1_000;
+    const webCall = assistant(
+      "work-view-call",
+      null,
+      "web.run",
+      { reasoning_start_time: start, reasoning_title: "读取网页" },
+      { content_type: "text", parts: [""] },
+      "commentary",
+    );
+    const webResult = {
+      id: "work-view-result",
+      author: { role: "tool", name: "web.run" },
+      create_time: null,
+      update_time: null,
+      content: { content_type: "text", parts: [""] },
+      metadata: {
+        parent_id: "work-view-call",
+        reasoning_start_time: start,
+        search_model_queries: { queries: [] },
+        search_result_groups: [
+          {
+            domain: "example.com",
+            entries: [
+              {
+                title: "Example",
+                url: "https://example.com/article",
+                snippet: "Total lines: 100",
+                ref_id: { turn_index: 1, ref_type: "view", ref_index: 0 },
+              },
+            ],
+          },
+        ],
+      },
+      recipient: "all",
+      channel: null,
+    };
+
+    const result = merged([
+      ev(JSON.stringify({ o: "add", v: { message: webCall } }), "delta", 1_010_000),
+      ev(JSON.stringify({ o: "add", v: { message: webResult } }), "delta", 1_014_000),
+      add(recap("work-recap", "work-view-result", start, 1_020)),
+    ]);
+
+    const web = findItem(result, (text) => text.includes("web.run · VIEW"));
+    expect(web?.elapsedSec).toBe(10);
+    expect(web?.durationSec).toBe(4);
+    expect(web?.durationKind).toBe("measured");
+    expect(result.channels.reasoning).toContain("+10.0s  工具 · web.run · VIEW");
+    expect(result.channels.tools[0]?.operation).toBe("VIEW");
+    expect(JSON.parse(result.channels.tools[0]!.arguments).type).toBe("VIEW");
   });
 
   it("supports zero-length inferred intervals when two visible events share a timestamp", () => {

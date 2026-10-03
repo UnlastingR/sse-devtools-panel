@@ -7,6 +7,28 @@ export type ChatgptWebSocketTurnItem =
   | { topicId: string; type: "done" }
   | { topicId: string; type: "error"; message: string };
 
+/** Redact resumable topic credentials before they cross into extension storage/export. */
+export function redactChatgptWebSocketEncodedItem(text: string): string {
+  return text.replace(
+    /(^|\r?\n)(data:\s*)(\{[^\r\n]*\})(?=\r?\n|$)/g,
+    (whole, lineStart: string, prefix: string, jsonText: string) => {
+      try {
+        const parsed = JSON.parse(jsonText) as unknown;
+        if (
+          !isRecord(parsed) ||
+          parsed.type !== "resume_conversation_token" ||
+          typeof parsed.token !== "string"
+        ) {
+          return whole;
+        }
+        return `${lineStart}${prefix}${JSON.stringify({ ...parsed, token: "[REDACTED]" })}`;
+      } catch {
+        return whole;
+      }
+    },
+  );
+}
+
 type TopicState = {
   requestId: string;
   startedAt: number;
@@ -170,7 +192,10 @@ export function patchWebSocket(
         if (state.seenStreamItemIds.has(item.streamItemId)) continue;
         state.seenStreamItemIds.add(item.streamItemId);
       }
-      postChunk({ requestId: state.requestId, text: item.encodedItem });
+      postChunk({
+        requestId: state.requestId,
+        text: redactChatgptWebSocketEncodedItem(item.encodedItem),
+      });
     }
   };
 

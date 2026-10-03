@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { extractChatgptWebSocketTurnItems } from "../patch-websocket";
+import {
+  extractChatgptWebSocketTurnItems,
+  redactChatgptWebSocketEncodedItem,
+} from "../patch-websocket";
 
 function streamItem(topicId: string, id: string, encodedItem: string) {
   return {
@@ -17,6 +20,14 @@ function streamItem(topicId: string, id: string, encodedItem: string) {
 }
 
 describe("patch-websocket", () => {
+  it("redacts resume topic tokens before capture/export", () => {
+    const frame =
+      'data: {"type":"resume_conversation_token","kind":"topic","token":"secret-jwt","conversation_id":"conv"}\n\n';
+    expect(redactChatgptWebSocketEncodedItem(frame)).toBe(
+      'data: {"type":"resume_conversation_token","kind":"topic","token":"[REDACTED]","conversation_id":"conv"}\n\n',
+    );
+  });
+
   it("extracts live ChatGPT Work turn items", () => {
     const topic = "conversation-turn-test";
     expect(

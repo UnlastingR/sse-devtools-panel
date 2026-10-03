@@ -18,6 +18,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set release version from tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const tag = process.env.TAG || '';
+          const version = tag.replace(/^v/, '');
+          if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(version)) {
+            throw new Error(`Release tag must be a Chrome-compatible version, got: ${tag}`);
+          }
+          for (const part of version.split('.')) {
+            const value = Number(part);
+            if (!Number.isInteger(value) || value < 0 || value > 65535) {
+              throw new Error(`Invalid Chrome version component: ${part}`);
+            }
+          }
+          const path = 'manifest.json';
+          const manifest = JSON.parse(readFileSync(path, 'utf8'));
+          manifest.version = version;
+          manifest.version_name = `${version} (GitHub Release)`;
+          writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          console.log(`Release version: ${version}`);
+          NODE
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 

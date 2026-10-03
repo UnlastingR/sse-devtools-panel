@@ -203,7 +203,10 @@ export function renderRequest(
   if (responsePairs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "request-empty";
-    empty.textContent = t("requestResponseHeadersEmpty");
+    empty.textContent =
+      record.transport === "websocket"
+        ? t("requestWebSocketResponseHeadersEmpty")
+        : t("requestResponseHeadersEmpty");
     responseSection.appendChild(empty);
   } else {
     responseSection.appendChild(createNameValueTable(responsePairs, { redactValues: true }));
@@ -218,13 +221,17 @@ export function renderRequest(
   requestHeadersSection.appendChild(requestHeadersTitle);
   const requestHeadersHint = document.createElement("div");
   requestHeadersHint.className = "request-section-hint";
-  requestHeadersHint.textContent = t("requestHeadersHint");
+  requestHeadersHint.textContent =
+    record.transport === "websocket" ? t("requestWebSocketHeadersHint") : t("requestHeadersHint");
   requestHeadersSection.appendChild(requestHeadersHint);
   const requestPairs = headersToPairs(record.requestHeaders);
   if (requestPairs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "request-empty";
-    empty.textContent = t("requestHeadersEmpty");
+    empty.textContent =
+      record.transport === "websocket"
+        ? t("requestWebSocketHeadersEmpty")
+        : t("requestHeadersEmpty");
     requestHeadersSection.appendChild(empty);
   } else {
     requestHeadersSection.appendChild(createNameValueTable(requestPairs, { redactValues: true }));

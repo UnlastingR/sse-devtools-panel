@@ -90,7 +90,7 @@ export {
  * Merge stream events into an AI conversation (one-shot via incremental session).
  */
 export function mergeAiConversation(
-  events: ReadonlyArray<Pick<SseEvent, "data" | "event">>,
+  events: ReadonlyArray<Pick<SseEvent, "data" | "event"> & Partial<Pick<SseEvent, "receivedAt">>>,
   url?: string,
   observation?: AiMergeObservation,
 ): AiConversation {

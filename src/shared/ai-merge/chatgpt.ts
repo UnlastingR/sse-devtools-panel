@@ -14,6 +14,10 @@ type ChatgptMessage = {
   authorName?: string;
   createdAt?: number;
   updatedAt?: number;
+  /** First browser-observed arrival time, in Unix seconds. */
+  observedAt?: number;
+  /** Latest browser-observed patch time, in Unix seconds. */
+  observedUpdatedAt?: number;
   sourceAnalysisMessageId?: string;
   recipient?: string;
   channel?: string | null;
@@ -87,7 +91,13 @@ function thoughtSummaries(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
+function observedSeconds(receivedAtMs?: number): number | undefined {
+  return typeof receivedAtMs === "number" && Number.isFinite(receivedAtMs)
+    ? receivedAtMs / 1000
+    : undefined;
+}
+
+function ingestMessage(raw: unknown, state: ChatgptWebMergeState, receivedAtMs?: number): void {
   if (!isRecord(raw) || typeof raw.id !== "string") return;
   const author = isRecord(raw.author) ? raw.author : null;
   const role = author && typeof author.role === "string" ? author.role : "unknown";
@@ -95,12 +105,15 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
   const rawContent = isRecord(raw.content) ? raw.content : null;
   const metadata = isRecord(raw.metadata) ? { ...raw.metadata } : {};
   const existing = state.messages.get(raw.id);
+  const observed = observedSeconds(receivedAtMs);
   const msg: ChatgptMessage = {
     id: raw.id,
     role,
     authorName: author && typeof author.name === "string" ? author.name : existing?.authorName,
     createdAt: typeof raw.create_time === "number" ? raw.create_time : existing?.createdAt,
     updatedAt: typeof raw.update_time === "number" ? raw.update_time : existing?.updatedAt,
+    observedAt: existing?.observedAt ?? observed,
+    observedUpdatedAt: observed ?? existing?.observedUpdatedAt,
     sourceAnalysisMessageId:
       rawContent && typeof rawContent.source_analysis_msg_id === "string"
         ? rawContent.source_analysis_msg_id
@@ -218,16 +231,22 @@ function applyMessagePatch(
   op: string,
   value: unknown,
   state: ChatgptWebMergeState,
+  receivedAtMs?: number,
 ): void {
   const msg = currentMessage(state);
   if (!msg) return;
+  const observed = observedSeconds(receivedAtMs);
+  if (observed != null) {
+    msg.observedAt ??= observed;
+    msg.observedUpdatedAt = observed;
+  }
 
   if (op === "patch" && Array.isArray(value)) {
     for (const item of value) {
       if (!isRecord(item)) continue;
       const childPath = typeof item.p === "string" ? item.p : "";
       const childOp = typeof item.o === "string" ? item.o : "";
-      applyMessagePatch(joinPointer(path, childPath), childOp, item.v, state);
+      applyMessagePatch(joinPointer(path, childPath), childOp, item.v, state, receivedAtMs);
     }
     return;
   }
@@ -281,9 +300,13 @@ function applyMessagePatch(
   }
 }
 
-function ingestDelta(parsed: Record<string, unknown>, state: ChatgptWebMergeState): void {
+function ingestDelta(
+  parsed: Record<string, unknown>,
+  state: ChatgptWebMergeState,
+  receivedAtMs?: number,
+): void {
   if (isRecord(parsed.v) && isRecord(parsed.v.message)) {
-    ingestMessage(parsed.v.message, state);
+    ingestMessage(parsed.v.message, state, receivedAtMs);
     state.chunkCount++;
     return;
   }
@@ -292,7 +315,7 @@ function ingestDelta(parsed: Record<string, unknown>, state: ChatgptWebMergeStat
   if (typeof parsed.o === "string") state.lastOp = parsed.o;
   if (!("v" in parsed)) return;
 
-  applyMessagePatch(state.lastPath, state.lastOp, parsed.v, state);
+  applyMessagePatch(state.lastPath, state.lastOp, parsed.v, state, receivedAtMs);
   state.chunkCount++;
 }
 
@@ -396,15 +419,39 @@ function searchResultsFromGroups(value: unknown): Array<Record<string, unknown>>
             ? entry.site_name
             : domain;
       if (!title && !url && !snippet) continue;
+      const refId = isRecord(entry.ref_id) ? entry.ref_id : null;
+      const refType = refId && typeof refId.ref_type === "string" ? refId.ref_type : undefined;
       out.push({
         title,
         url,
         snippet,
         site_name: site,
+        ...(refType ? { ref_type: refType } : {}),
       });
     }
   }
   return out;
+}
+
+type WebRunOperation = "SEARCH" | "VIEW";
+
+function webRunOperation(details: {
+  queries: string[];
+  results: Array<Record<string, unknown>>;
+}): WebRunOperation {
+  if (details.queries.length > 0) return "SEARCH";
+  if (details.results.some((result) => result.ref_type === "view" || result.ref_type === "open")) {
+    return "VIEW";
+  }
+  // A result-only web.run step is page retrieval/browsing rather than a new query.
+  return details.results.length > 0 ? "VIEW" : "SEARCH";
+}
+
+function directWebRunOperation(msg: ChatgptMessage): WebRunOperation {
+  return webRunOperation({
+    queries: searchQueriesFromMetadata(msg.metadata),
+    results: searchResultsFromGroups(msg.metadata.search_result_groups),
+  });
 }
 
 function searchDetailsForTool(
@@ -865,8 +912,11 @@ function reasoningDurationInfo(
 }
 
 function reasoningElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
-  if (start == null || msg.createdAt == null || !Number.isFinite(msg.createdAt)) return undefined;
-  return Math.max(0, msg.createdAt - start);
+  if (start == null) return undefined;
+  const timestamp =
+    msg.createdAt != null && Number.isFinite(msg.createdAt) ? msg.createdAt : msg.observedAt;
+  if (timestamp == null || !Number.isFinite(timestamp)) return undefined;
+  return Math.max(0, timestamp - start);
 }
 
 function reasoningElapsedSecWithFallback(
@@ -900,7 +950,11 @@ function reasoningElapsedSecWithFallback(
 function messageCompletionElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
   if (start == null) return undefined;
   const completedAt =
-    msg.updatedAt != null && Number.isFinite(msg.updatedAt) ? msg.updatedAt : msg.createdAt;
+    msg.updatedAt != null && Number.isFinite(msg.updatedAt)
+      ? msg.updatedAt
+      : msg.createdAt != null && Number.isFinite(msg.createdAt)
+        ? msg.createdAt
+        : (msg.observedUpdatedAt ?? msg.observedAt);
   if (completedAt == null || !Number.isFinite(completedAt)) return undefined;
   return Math.max(0, completedAt - start);
 }
@@ -1003,7 +1057,9 @@ function relatedLogicalTool(
 }
 
 function toolContextLabel(tool: ChatgptMessage, state: ChatgptWebMergeState): string {
-  if (tool.recipient === "web.run") return "web.run · SEARCH";
+  if (tool.recipient === "web.run") {
+    return `web.run · ${webRunOperation(searchDetailsForTool(tool, state))}`;
+  }
   if (tool.recipient === "python") return "python · BUILTIN";
   const identity = toolIdentity(tool, state);
   const ui = toolUiDetails(tool, state);
@@ -1160,7 +1216,7 @@ function reasoningStages(
       seenTools.add(msg.id);
       const stage = stageFor(msg, reasoningStageTitle(msg, state) || title, false);
       const search = standaloneWebSearchDetails(msg, state);
-      let label = "web.run · SEARCH";
+      let label = `web.run · ${directWebRunOperation(msg)}`;
       const bits: string[] = [];
       if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
       if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
@@ -1329,14 +1385,16 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
 
     if (isStandaloneWebToolResult(msg, state)) {
       const search = standaloneWebSearchDetails(msg, state);
+      const operation = directWebRunOperation(msg);
       out.push({
         index: out.length,
         id: msg.id,
         name: "web.run",
         provider: "web.run",
         kind: "search",
+        operation,
         arguments: JSON.stringify({
-          type: "SEARCH",
+          type: operation,
           queries: search.queries,
           results: search.results,
         }),
@@ -1351,7 +1409,12 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
         let args = connectorPayloadForTool(msg, state);
         let identity = toolIdentity(msg, state);
         if (msg.recipient === "web.run") {
-          identity = { provider: "web.run", kind: "search" };
+          const search = searchDetailsForTool(msg, state);
+          identity = {
+            provider: "web.run",
+            kind: "search",
+            operation: webRunOperation(search),
+          };
         } else if (msg.recipient === "python") {
           identity = { provider: "python", kind: "builtin" };
         }
@@ -1372,8 +1435,9 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
           if (msg.recipient === "web.run") {
             const search = searchDetailsForTool(msg, state);
             if (search.queries.length > 0 || search.results.length > 0) {
+              const operation = webRunOperation(search);
               args = JSON.stringify({
-                type: "SEARCH",
+                type: operation,
                 queries: search.queries,
                 results: search.results,
               });
@@ -1421,7 +1485,7 @@ export function createChatgptWebMergeState(): ChatgptWebMergeState {
 
 export function pushChatgptWeb(
   state: ChatgptWebMergeState,
-  events: ReadonlyArray<Pick<SseEvent, "data" | "event">>,
+  events: ReadonlyArray<Pick<SseEvent, "data" | "event"> & Partial<Pick<SseEvent, "receivedAt">>>,
 ): void {
   for (const ev of events) {
     if (ev.event === "delta_encoding") continue;
@@ -1432,7 +1496,7 @@ export function pushChatgptWeb(
     const parsed = parseEventData(ev.data);
     if (!isRecord(parsed)) continue;
     if (ev.event === "delta") {
-      ingestDelta(parsed, state);
+      ingestDelta(parsed, state, ev.receivedAt);
       continue;
     }
     if (parsed.type === "message_stream_complete") {

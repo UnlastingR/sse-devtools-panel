@@ -886,14 +886,23 @@
   "requestResponseHeadersEmpty": {
     "message": "No response headers captured (EventSource / provisional start)."
   },
+  "requestWebSocketResponseHeadersEmpty": {
+    "message": "WebSocket handshake response headers are not exposed to page JavaScript, so they cannot be captured here."
+  },
   "requestHeadersTitle": {
     "message": "Request Headers"
   },
   "requestHeadersHint": {
     "message": "Captured from page JS (fetch/XHR). Browser-added headers may be missing. Sensitive values show as [REDACTED]."
   },
+  "requestWebSocketHeadersHint": {
+    "message": "The WebSocket API exposes the URL and messages, but not browser-generated handshake headers. Sensitive URL credentials and resumable topic tokens are redacted before storage/export."
+  },
   "requestHeadersEmpty": {
     "message": "No request headers captured for this stream."
+  },
+  "requestWebSocketHeadersEmpty": {
+    "message": "WebSocket handshake request headers are not exposed to page JavaScript."
   },
   "requestHeaderName": {
     "message": "Name"
