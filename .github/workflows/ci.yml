@@ -48,6 +48,13 @@ jobs:
       - name: Package offline release zip
         run: pnpm release:zip
 
+      - name: Upload extension package
+        uses: actions/upload-artifact@v4
+        with:
+          name: sse-devtools-panel-extension
+          path: website/public/releases/*.zip
+          if-no-files-found: error
+
       - name: Install website dependencies
         run: pnpm install --frozen-lockfile
         working-directory: website
