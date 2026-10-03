@@ -717,6 +717,116 @@ describe("ai-merge", () => {
             o: "add",
             v: {
               message: {
+                id: "recall-before-web",
+                author: { role: "assistant" },
+                content: { content_type: "code", text: '{"query":"context"}' },
+                metadata: { request_id: "req-1", working_turn_id: "turn-1" },
+                recipient: "q7dr546",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "recall-summary-before-web",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "恢复上下文", content: "", finished: true }],
+                },
+                metadata: {
+                  parent_id: "recall-before-web",
+                  request_id: "req-1",
+                  working_turn_id: "turn-1",
+                  inline_cot_expandable_content: { source_message_ids: ["recall-before-web"] },
+                  tool_summary_type: "personal_context",
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "standalone-web",
+                author: { role: "tool", name: "web.run" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  parent_id: "recall-summary-before-web",
+                  request_id: "req-1",
+                  working_turn_id: "turn-1",
+                  reasoning_title: "正在搜索 OpenAI official site",
+                  search_model_queries: { queries: ["OpenAI official site"] },
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "final-with-search-results",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: ["done"] },
+                metadata: {
+                  request_id: "req-1",
+                  working_turn_id: "turn-1",
+                  search_result_groups: [
+                    {
+                      domain: "openai.com",
+                      entries: [
+                        {
+                          title: "OpenAI Status",
+                          url: "https://status.openai.com/",
+                          snippet: "Operational",
+                          attribution: "openai.com",
+                        },
+                      ],
+                    },
+                  ],
+                },
+                recipient: "all",
+                channel: "final",
+                end_turn: true,
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 2, `standalone web tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[1]?.provider === "web.run", "standalone web provider restored");
+      assert(t.channels.tools[1]?.kind === "search", "standalone web classified as search");
+      const args = JSON.parse(t.channels.tools[1]!.arguments);
+      assert(args.queries.length === 1, "standalone web query restored");
+      assert(args.results.length === 1, "standalone web results restored from same turn");
+      assert(
+        t.channels.reasoning.includes("工具 · web.run · SEARCH · 1 个查询 / 1 个结果"),
+        "standalone web appears in reasoning timeline",
+      );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
                 id: "files-wrapper",
                 author: { role: "assistant" },
                 content: { content_type: "text", parts: [""] },
@@ -825,6 +935,45 @@ describe("ai-merge", () => {
         t.channels.reasoning.includes("工具 · container · BUILTIN · exec"),
         "container gets builtin reasoning label",
       );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ...[
+          ["family", "safety_settings.get_family_info"],
+          ["trusted", "safety_settings.get_trusted_contact"],
+          ["genui", "genui.search"],
+          ["automation", "automations.peek"],
+          ["summary", "summary_reader.read"],
+        ].map(([id, recipient]) =>
+          ev(
+            JSON.stringify({
+              o: "add",
+              v: {
+                message: {
+                  id,
+                  author: { role: "assistant" },
+                  content: { content_type: "code", text: "{}" },
+                  metadata: {},
+                  recipient,
+                  channel: "commentary",
+                },
+              },
+            }),
+            "delta",
+          ),
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 5, `direct builtin tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.provider === "safety_settings", "safety provider normalized");
+      assert(t.channels.tools[0]?.kind === "builtin", "safety classified as builtin");
+      assert(t.channels.tools[0]?.operation === "get_family_info", "safety operation extracted");
+      assert(t.channels.tools[2]?.provider === "genui", "genui provider normalized");
+      assert(t.channels.tools[2]?.operation === "search", "genui operation extracted");
+      assert(t.channels.tools[3]?.provider === "automations", "automations provider normalized");
+      assert(t.channels.tools[4]?.provider === "summary_reader", "summary reader normalized");
     }
 
     {

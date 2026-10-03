@@ -473,20 +473,99 @@ function connectorPathIdentity(text: string): {
 }
 
 function builtinProvider(provider: string | undefined): boolean {
-  return provider === "files" || provider === "python" || provider === "container";
+  return (
+    provider === "files" ||
+    provider === "python" ||
+    provider === "container" ||
+    provider === "safety_settings" ||
+    provider === "genui" ||
+    provider === "automations" ||
+    provider === "summary_reader" ||
+    provider === "personal_context" ||
+    provider === "image_gen" ||
+    provider === "guardian_tool" ||
+    provider === "artifact_handoff" ||
+    provider === "python_user_visible" ||
+    provider === "bio"
+  );
 }
 
 function directBuiltinIdentity(
   tool: ChatgptMessage,
 ): Pick<AiToolCall, "provider" | "kind" | "operation"> | null {
-  if (tool.recipient?.startsWith("container.")) {
-    return {
-      provider: "container",
-      kind: "builtin",
-      operation: tool.recipient.slice("container.".length) || undefined,
-    };
+  const recipient = tool.recipient?.trim();
+  if (!recipient) return null;
+  const dot = recipient.indexOf(".");
+  if (dot <= 0) return null;
+  const provider = recipient.slice(0, dot);
+  if (!builtinProvider(provider) || provider === "files" || provider === "python") return null;
+  return {
+    provider,
+    kind: "builtin",
+    operation: recipient.slice(dot + 1) || undefined,
+  };
+}
+
+function webToolCallAncestor(
+  msg: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): ChatgptMessage | undefined {
+  let next = parentId(msg);
+  const seen = new Set<string>();
+  while (next && !seen.has(next)) {
+    seen.add(next);
+    const parent = state.messages.get(next);
+    if (!parent) return undefined;
+    if (parent.role === "assistant" && parent.recipient && parent.recipient !== "all") {
+      return parent.recipient === "web.run" ? parent : undefined;
+    }
+    next = parentId(parent);
   }
-  return null;
+  return undefined;
+}
+
+function isStandaloneWebToolResult(msg: ChatgptMessage, state: ChatgptWebMergeState): boolean {
+  return msg.role === "tool" && msg.authorName === "web.run" && !webToolCallAncestor(msg, state);
+}
+
+function sameChatgptTurn(a: ChatgptMessage, b: ChatgptMessage): boolean {
+  const aWorking = a.metadata.working_turn_id;
+  const bWorking = b.metadata.working_turn_id;
+  if (typeof aWorking === "string" && typeof bWorking === "string") return aWorking === bWorking;
+  const aRequest = a.metadata.request_id;
+  const bRequest = b.metadata.request_id;
+  return typeof aRequest === "string" && typeof bRequest === "string" && aRequest === bRequest;
+}
+
+function standaloneWebSearchDetails(
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): { queries: string[]; results: Array<Record<string, unknown>> } {
+  const queries: string[] = [];
+  const results: Array<Record<string, unknown>> = [];
+  const seenQueries = new Set<string>();
+  const seenResults = new Set<string>();
+  const ingest = (msg: ChatgptMessage) => {
+    for (const q of searchQueriesFromMetadata(msg.metadata)) {
+      if (!seenQueries.has(q)) {
+        seenQueries.add(q);
+        queries.push(q);
+      }
+    }
+    for (const result of searchResultsFromGroups(msg.metadata.search_result_groups)) {
+      const key = String(result.url || result.title || "");
+      if (key && seenResults.has(key)) continue;
+      if (key) seenResults.add(key);
+      results.push(result);
+    }
+  };
+  ingest(tool);
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.id === tool.id || !sameChatgptTurn(msg, tool)) continue;
+    ingest(msg);
+  }
+  return { queries, results };
 }
 
 function recallToolIdentity(
@@ -892,6 +971,24 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       continue;
     }
 
+    if (isStandaloneWebToolResult(msg, state) && !seenTools.has(msg.id)) {
+      seenTools.add(msg.id);
+      const stage = stageFor(msg, reasoningStageTitle(msg, state) || title, false);
+      const search = standaloneWebSearchDetails(msg, state);
+      let label = "web.run · SEARCH";
+      const bits: string[] = [];
+      if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
+      if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
+      if (bits.length > 0) label += ` · ${bits.join(" / ")}`;
+      stage.items.push({
+        kind: "tool",
+        text: label,
+        elapsedSec: reasoningElapsedSec(msg, start),
+        toolId: msg.id,
+      });
+      continue;
+    }
+
     const widgets = clientWidgetsFromMessage(msg);
     if (widgets.length > 0) {
       const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
@@ -979,7 +1076,26 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
   const out: AiToolCall[] = [];
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || msg.role !== "assistant") continue;
+    if (!msg) continue;
+
+    if (isStandaloneWebToolResult(msg, state)) {
+      const search = standaloneWebSearchDetails(msg, state);
+      out.push({
+        index: out.length,
+        id: msg.id,
+        name: "web.run",
+        provider: "web.run",
+        kind: "search",
+        arguments: JSON.stringify({
+          type: "SEARCH",
+          queries: search.queries,
+          results: search.results,
+        }),
+      });
+      continue;
+    }
+
+    if (msg.role !== "assistant") continue;
 
     if (msg.recipient && msg.recipient !== "all") {
       if (!(msg.recipient === "api_tool.call_tool" && logicalToolParent(msg, state))) {
