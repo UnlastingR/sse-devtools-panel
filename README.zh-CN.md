@@ -410,6 +410,53 @@ reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist" /v 1 /t
 
 这里 `ExtensionInstallAllowlist` 与 `ExtensionInstallForcelist` 是配合使用的：前者允许该扩展 ID，后者指定强制安装及更新地址。写入 `HKLM` 机器级策略需要管理员权限。
 
+#### macOS Chrome 自托管 CRX 策略安装
+
+macOS 没有 Windows 注册表。Chrome 政策通过 `com.google.Chrome` 偏好域下发，通常使用配置描述文件（`.mobileconfig`）。对于新部署，推荐使用 `ExtensionSettings`；它的优先级高于旧的 `ExtensionInstallForcelist`。
+
+将下面的策略加入 `com.google.Chrome.plist`，或在 MDM 中配置等价内容，并替换扩展 ID 与更新地址占位符：
+
+```xml
+<key>ExtensionSettings</key>
+<dict>
+  <key>EXTENSION_ID</key>
+  <dict>
+    <key>installation_mode</key>
+    <string>force_installed</string>
+    <key>update_url</key>
+    <string>UPDATE_XML_URL</string>
+    <key>override_update_url</key>
+    <true/>
+  </dict>
+</dict>
+```
+
+其中 `force_installed` 会自动安装扩展，并阻止用户自行停用或删除；`override_update_url` 会让后续更新继续使用策略里指定的更新地址，而不是回退到扩展 `manifest` 内嵌的更新地址。
+
+本机或 MDM 部署流程：
+
+1. 把策略写入 `com.google.Chrome.plist`
+2. 转换为可安装的 `com.google.Chrome.mobileconfig`，或直接在 MDM 中配置同样的键值
+3. 安装/下发配置描述文件并重启 Chrome
+4. 打开 `chrome://policy/`，点击「重新加载政策」
+5. 确认 `ExtensionSettings` 中出现目标扩展 ID
+6. 打开 `chrome://extensions/`，确认扩展已自动安装并处于受管理状态
+
+Google 的 Chrome Browser Enterprise 配置包中包含示例 `com.google.Chrome.plist`；官方 macOS 快速入门也说明了如何将该 plist 转换成 `com.google.Chrome.mobileconfig` 后部署。
+
+旧环境也可以继续使用下面这组兼容策略，但新部署建议优先使用 `ExtensionSettings`：
+
+```xml
+<key>ExtensionInstallAllowlist</key>
+<array>
+  <string>EXTENSION_ID</string>
+</array>
+<key>ExtensionInstallForcelist</key>
+<array>
+  <string>EXTENSION_ID;UPDATE_XML_URL</string>
+</array>
+```
+
 更完整的协作说明见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ---

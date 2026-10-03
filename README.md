@@ -384,6 +384,53 @@ Then:
 
 This approach avoids requiring the Chrome Web Store while still using Chrome's managed-extension policy path. Administrator rights are required to write the machine-level policy keys.
 
+#### Self-hosted CRX on managed macOS Chrome
+
+On macOS, Chrome policies are deployed through the `com.google.Chrome` preference domain, normally as a configuration profile (`.mobileconfig`). For new deployments, prefer `ExtensionSettings`; it takes precedence over the legacy `ExtensionInstallForcelist` policy.
+
+Add the following policy to your `com.google.Chrome.plist` or equivalent MDM configuration, replacing the placeholders with your own extension ID and update endpoint:
+
+```xml
+<key>ExtensionSettings</key>
+<dict>
+  <key>EXTENSION_ID</key>
+  <dict>
+    <key>installation_mode</key>
+    <string>force_installed</string>
+    <key>update_url</key>
+    <string>UPDATE_XML_URL</string>
+    <key>override_update_url</key>
+    <true/>
+  </dict>
+</dict>
+```
+
+`force_installed` installs the extension automatically and prevents users from removing or disabling it. `override_update_url` keeps subsequent updates on the policy-specified update endpoint instead of falling back to an update URL embedded in the extension manifest.
+
+To deploy locally or through MDM:
+
+1. Put the policy in `com.google.Chrome.plist`
+2. Convert it to an installable `com.google.Chrome.mobileconfig` profile, or configure the same keys directly in your MDM
+3. Install/deploy the profile and restart Chrome
+4. Open `chrome://policy/` and click **Reload policies**
+5. Confirm `ExtensionSettings` contains the expected extension ID
+6. Open `chrome://extensions/` and verify that the extension is installed and managed
+
+Google's Chrome Browser Enterprise bundle includes a sample `com.google.Chrome.plist`. Its macOS quick-start guide also documents converting that plist into `com.google.Chrome.mobileconfig` for deployment.
+
+Legacy policy deployments can use the older pair below, but `ExtensionSettings` is preferred for new setups:
+
+```xml
+<key>ExtensionInstallAllowlist</key>
+<array>
+  <string>EXTENSION_ID</string>
+</array>
+<key>ExtensionInstallForcelist</key>
+<array>
+  <string>EXTENSION_ID;UPDATE_XML_URL</string>
+</array>
+```
+
 More collaboration notes: [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
