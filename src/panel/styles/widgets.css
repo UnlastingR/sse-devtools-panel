@@ -259,6 +259,10 @@
   fill: color-mix(in srgb, var(--warning) 75%, transparent);
 }
 
+.gap-histogram .bar.is-critical {
+  fill: color-mix(in srgb, var(--danger) 82%, transparent);
+}
+
 .gap-histogram .plot-axis {
   stroke: var(--stroke);
   stroke-width: 1;

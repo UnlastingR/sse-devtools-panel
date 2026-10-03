@@ -36,6 +36,7 @@ export function createGapHistogramSvg(bins: HistogramBin[]): SVGSVGElement {
   const gap = 4;
   const barW = Math.max(8, (plotW - gap * (bins.length - 1)) / bins.length);
   const hotThreshold = 500;
+  const criticalThreshold = 60_000;
 
   // Y-axis baseline + value ticks
   const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -81,7 +82,13 @@ export function createGapHistogramSvg(bins: HistogramBin[]): SVGSVGElement {
     const x = padL + i * (barW + gap);
     const y = padT + plotH - h;
     const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    rect.setAttribute("class", `bar${bin.fromMs >= hotThreshold ? " is-hot" : ""}`);
+    const severityClass =
+      bin.fromMs >= criticalThreshold
+        ? " is-critical"
+        : bin.fromMs >= hotThreshold
+          ? " is-hot"
+          : "";
+    rect.setAttribute("class", `bar${severityClass}`);
     rect.setAttribute("x", String(x));
     rect.setAttribute("y", String(y));
     rect.setAttribute("width", String(barW));
