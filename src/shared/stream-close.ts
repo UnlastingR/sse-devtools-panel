@@ -72,3 +72,32 @@ export function latestEventIdFromEvents(events: Array<{ id?: string }>): string 
   }
   return undefined;
 }
+
+/**
+ * True when the application protocol already emitted an explicit terminal marker.
+ * A later AbortError can be ordinary page cleanup rather than a failed stream.
+ */
+export function streamHasExplicitCompletion(
+  events: ReadonlyArray<{ data: string; event?: string }>,
+): boolean {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const data = events[i]?.data?.trim();
+    if (!data) continue;
+    if (data === "[DONE]") return true;
+    if (!data.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>).type === "message_stream_complete"
+      ) {
+        return true;
+      }
+    } catch {
+      // Ignore malformed/non-JSON event payloads.
+    }
+  }
+  return false;
+}

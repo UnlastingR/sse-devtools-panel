@@ -27,6 +27,93 @@ describe("ai-merge", () => {
           "qwen",
         "qwen host",
       );
+      assert(
+        vendorHintFromUrl("https://chatgpt.com/backend-api/f/conversation") === "openai",
+        "chatgpt host",
+      );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            v: {
+              message: {
+                id: "progress",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: ["Cam"] },
+                metadata: { resolved_model_slug: "gpt-5-6-thinking" },
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "ou" }), "delta"),
+        ev(
+          JSON.stringify({
+            p: "",
+            o: "patch",
+            v: [
+              { p: "/message/content/parts/0", o: "append", v: "fox。" },
+              {
+                p: "/message/metadata",
+                o: "append",
+                v: { is_visually_hidden_from_conversation: true },
+              },
+            ],
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "final",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: ["`a"] },
+                metadata: { resolved_model_slug: "gpt-5-6-thinking" },
+                recipient: "all",
+                channel: "final",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "istudio" }),
+          "delta",
+        ),
+        ev(JSON.stringify({ v: "-to-api`" }), "delta"),
+        ev(
+          JSON.stringify({
+            p: "",
+            o: "patch",
+            v: [
+              { p: "/message/content/parts/0", o: "append", v: " 正常。" },
+              { p: "/message/status", o: "replace", v: "finished_successfully" },
+              { p: "/message/end_turn", o: "replace", v: true },
+            ],
+          }),
+          "delta",
+        ),
+        ev(JSON.stringify({ type: "message_stream_complete" })),
+        ev("[DONE]"),
+      ];
+      const det = detectAiProfile(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(det.profile === "chatgpt-web", `chatgpt profile got ${det.profile}`);
+      assert(det.vendorHint === "openai", `chatgpt vendor got ${det.vendorHint}`);
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(
+        t.channels.content === "`aistudio-to-api` 正常。",
+        `chatgpt content: ${t.channels.content}`,
+      );
+      assert(!t.channels.content.includes("Camoufox"), "hidden commentary must be excluded");
+      assert(t.endMeta.model === "gpt-5-6-thinking", "chatgpt model");
+      assert(t.endMeta.finishReason === "stop", "chatgpt finish");
     }
 
     {

@@ -18,6 +18,14 @@ export {
   mergeOpenAiCompatible,
 } from "./openai";
 
+export type { ChatgptWebMergeState } from "./chatgpt";
+export {
+  createChatgptWebMergeState,
+  pushChatgptWeb,
+  snapshotChatgptWeb,
+  mergeChatgptWeb,
+} from "./chatgpt";
+
 export type { DeepseekWebMergeState, FragType } from "./deepseek";
 export {
   createDeepseekWebMergeState,

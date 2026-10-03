@@ -35,9 +35,20 @@ describe("stream-timing", () => {
       "bin 50-100",
     );
     assert(
-      hist.some((b) => b.label === "1000+" && b.count === 1),
-      "bin 1000+",
+      hist.some((b) => b.label === "1000–10000" && b.count === 1),
+      "bin 1s-10s",
     );
+
+    const longHist = buildGapHistogram([
+      { gapMs: 10_000 },
+      { gapMs: 30_000 },
+      { gapMs: 60_000 },
+      { gapMs: 180_000 },
+    ]);
+    assert(longHist.some((b) => b.label === "10000–30000" && b.count === 1), "10s boundary");
+    assert(longHist.some((b) => b.label === "30000–60000" && b.count === 1), "30s boundary");
+    assert(longHist.some((b) => b.label === "60000–180000" && b.count === 1), "1min boundary");
+    assert(longHist.some((b) => b.label === "180000+" && b.count === 1), "3min boundary");
 
     const marks = buildTimelineMarks(events, 1000);
     assert(marks.length === 4, "marks");

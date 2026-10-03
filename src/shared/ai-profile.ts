@@ -3,6 +3,7 @@ import type { SseEvent } from "./types";
 /** Conversation merge protocol family. */
 export type AiProfile =
   | "openai-compatible"
+  | "chatgpt-web"
   | "deepseek-web"
   | "doubao-web"
   | "kimi-web"
@@ -83,7 +84,14 @@ const VENDOR_HOST_RULES: Array<{ hint: AiVendorHint; test: (host: string) => boo
       h.includes("kimi"),
   },
   { hint: "baichuan", test: (h) => h.includes("baichuan-ai.com") || h.includes("baichuan") },
-  { hint: "openai", test: (h) => h.includes("openai.com") || h.includes("api.openai") },
+  {
+    hint: "openai",
+    test: (h) =>
+      h.includes("openai.com") ||
+      h.includes("api.openai") ||
+      h === "chatgpt.com" ||
+      h.endsWith(".chatgpt.com"),
+  },
   { hint: "anthropic", test: (h) => h.includes("anthropic.com") || h.includes("claude") },
 ];
 
@@ -98,6 +106,17 @@ const DOUBAO_WEB_EVENTS = new Set([
 ]);
 
 const DEEPSEEK_WEB_EVENTS = new Set(["ready", "update_session", "close"]);
+
+const CHATGPT_WEB_TYPES = new Set([
+  "resume_conversation_token",
+  "input_message",
+  "message_marker",
+  "server_ste_metadata",
+  "message_stream_complete",
+  "conversation_detail_metadata",
+  "safety_review_update",
+  "url_moderation",
+]);
 
 const KIMI_WEB_MASKS = new Set([
   "chat.lastRequest",
@@ -139,6 +158,38 @@ function tryParseJson(data: string): unknown | null {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isChatgptHost(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url, "https://dummy.local").hostname.toLowerCase();
+    return host === "chatgpt.com" || host.endsWith(".chatgpt.com");
+  } catch {
+    const text = url.toLowerCase();
+    return text.includes("chatgpt.com");
+  }
+}
+
+/** ChatGPT web /backend-api conversation stream (delta_encoding v1). */
+export function isChatgptWebChunk(value: unknown, eventName?: string): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value.type === "string" && CHATGPT_WEB_TYPES.has(value.type)) return true;
+  if (isRecord(value.v) && isRecord(value.v.message)) return true;
+  if (
+    eventName === "delta" &&
+    typeof value.p === "string" &&
+    value.p.startsWith("/message") &&
+    ("v" in value || typeof value.o === "string")
+  ) {
+    return true;
+  }
+  if (eventName === "delta" && value.o === "patch" && Array.isArray(value.v)) {
+    return value.v.some(
+      (item) => isRecord(item) && typeof item.p === "string" && item.p.startsWith("/message"),
+    );
+  }
+  return false;
 }
 
 /** OpenAI chat.completion.chunk shape (and compatible forks). */
@@ -352,6 +403,7 @@ export function detectAiProfile(
   const vendorHint = vendorHintFromUrl(url);
   const reasoningFields = new Set<string>();
   let openaiHits = 0;
+  let chatgptHits = 0;
   let deepseekHits = 0;
   let doubaoHits = 0;
   let kimiHits = 0;
@@ -360,9 +412,11 @@ export function detectAiProfile(
   let yuanbaoHits = 0;
   let anthropicHits = 0;
   const sampleLimit = Math.min(events.length, 80);
+  const chatgptHost = isChatgptHost(url);
 
   for (let i = 0; i < sampleLimit; i++) {
     const ev = events[i];
+    if (ev.event === "delta_encoding" && ev.data.trim() === "v1") chatgptHits += 6;
     if (DEEPSEEK_WEB_EVENTS.has(ev.event)) deepseekHits += 2;
     if (DOUBAO_WEB_EVENTS.has(ev.event)) doubaoHits += 2;
     if (
@@ -376,6 +430,7 @@ export function detectAiProfile(
 
     const parsed = tryParseJson(ev.data);
     if (parsed == null) continue;
+    if (isChatgptWebChunk(parsed, ev.event)) chatgptHits += 2;
     if (isOpenAiCompatibleChunk(parsed)) {
       openaiHits++;
       collectReasoningFields(parsed, reasoningFields);
@@ -415,6 +470,7 @@ export function detectAiProfile(
 
   const scores: Array<{ profile: AiProfile; score: number }> = [
     { profile: "openai-compatible", score: openaiHits },
+    { profile: "chatgpt-web", score: chatgptHits },
     { profile: "deepseek-web", score: deepseekHits },
     { profile: "doubao-web", score: doubaoHits },
     { profile: "kimi-web", score: kimiHits },
@@ -427,6 +483,13 @@ export function detectAiProfile(
 
   let profile: AiProfile = "generic";
   if (scores[0].score >= 1) profile = scores[0].profile;
+
+  // chatgpt.com uses a private delta_encoding:v1 protocol whose compact
+  // {p,o,v}/{v} patches overlap DeepSeek's web patch shape. Host + one
+  // ChatGPT-specific signal is authoritative and avoids that false positive.
+  if (chatgptHost && chatgptHits >= 1) {
+    profile = "chatgpt-web";
+  }
 
   // Prefer kimi-web on moonshot/kimi hosts when Connect frames are present.
   if (vendorHint === "moonshot" && kimiHits >= 2 && kimiHits >= openaiHits) {
@@ -449,7 +512,8 @@ export function detectAiProfile(
   }
 
   let resolvedVendor = vendorHint;
-  if (profile === "deepseek-web") resolvedVendor = "deepseek";
+  if (profile === "chatgpt-web") resolvedVendor = "openai";
+  else if (profile === "deepseek-web") resolvedVendor = "deepseek";
   else if (profile === "doubao-web") resolvedVendor = "doubao-web";
   else if (profile === "kimi-web") resolvedVendor = "moonshot";
   else if (profile === "qwen-web") resolvedVendor = "qwen";

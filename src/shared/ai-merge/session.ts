@@ -8,6 +8,12 @@ import {
   type OpenAiCompatibleMergeState,
 } from "./openai";
 import {
+  createChatgptWebMergeState,
+  pushChatgptWeb,
+  snapshotChatgptWeb,
+  type ChatgptWebMergeState,
+} from "./chatgpt";
+import {
   createDeepseekWebMergeState,
   pushDeepseekWeb,
   snapshotDeepseekWeb,
@@ -48,6 +54,7 @@ type EventLike = Pick<SseEvent, "data" | "event">;
 
 type VendorState =
   | { profile: "openai-compatible"; state: OpenAiCompatibleMergeState }
+  | { profile: "chatgpt-web"; state: ChatgptWebMergeState }
   | { profile: "deepseek-web"; state: DeepseekWebMergeState }
   | { profile: "doubao-web"; state: DoubaoWebMergeState }
   | { profile: "kimi-web"; state: KimiWebMergeState }
@@ -67,6 +74,8 @@ function createVendor(profile: AiProfile): VendorState | null {
   switch (profile) {
     case "openai-compatible":
       return { profile, state: createOpenAiCompatibleMergeState() };
+    case "chatgpt-web":
+      return { profile, state: createChatgptWebMergeState() };
     case "deepseek-web":
       return { profile, state: createDeepseekWebMergeState() };
     case "doubao-web":
@@ -88,6 +97,9 @@ function pushVendor(vendor: VendorState, events: ReadonlyArray<EventLike>): void
   switch (vendor.profile) {
     case "openai-compatible":
       pushOpenAiCompatible(vendor.state, events);
+      break;
+    case "chatgpt-web":
+      pushChatgptWeb(vendor.state, events);
       break;
     case "deepseek-web":
       pushDeepseekWeb(vendor.state, events);
@@ -115,6 +127,8 @@ function snapshotVendor(vendor: VendorState | null): MergeChannelsResult {
   switch (vendor.profile) {
     case "openai-compatible":
       return snapshotOpenAiCompatible(vendor.state);
+    case "chatgpt-web":
+      return snapshotChatgptWeb(vendor.state);
     case "deepseek-web":
       return snapshotDeepseekWeb(vendor.state);
     case "doubao-web":

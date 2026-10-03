@@ -5,6 +5,7 @@ import {
   isStreamCloseReason,
   latestEventIdFromEvents,
   normalizeReconnectMarks,
+  streamHasExplicitCompletion,
 } from "../stream-close";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -40,5 +41,12 @@ describe("stream-close", () => {
     assert(marks?.length === 2, "reconnect marks");
     assert(marks[0].lastEventId === "a", "reconnect id");
     assert(marks[1].lastEventId === undefined, "reconnect id optional");
+
+    assert(
+      streamHasExplicitCompletion([{ data: '{"type":"message_stream_complete"}' }]),
+      "ChatGPT terminal marker",
+    );
+    assert(streamHasExplicitCompletion([{ data: "[DONE]" }]), "DONE terminal marker");
+    assert(!streamHasExplicitCompletion([{ data: '{"type":"message_marker"}' }]), "not terminal");
   });
 });
