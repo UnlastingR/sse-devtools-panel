@@ -182,7 +182,13 @@ describe("ai-merge", () => {
               message: {
                 id: "connector",
                 author: { role: "assistant" },
-                content: { content_type: "code", text: "{}" },
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({
+                    path: "/Devspace/link_x/read",
+                    args: { workspaceId: "ws", path: "a.ts" },
+                  }),
+                },
                 metadata: {
                   parent_id: "outer",
                   connector_tool_payload: '{"workspaceId":"ws","path":"a.ts"}',

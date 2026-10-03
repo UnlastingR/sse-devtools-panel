@@ -422,6 +422,9 @@ function toolIdentity(
     candidates.push(msg);
   }
 
+  // First prefer definitive metadata emitted with the tool result. The
+  // assistant's api_tool.call_tool path is only a fallback: it cannot tell us
+  // whether an app is backed by MCP or by a normal connector/plugin.
   for (const msg of candidates) {
     const resource = isRecord(msg.metadata.invoked_resource) ? msg.metadata.invoked_resource : null;
     if (resource) {
@@ -447,7 +450,9 @@ function toolIdentity(
       );
       return { provider: provider?.trim(), source: "plugin", operation: operation?.trim() };
     }
+  }
 
+  for (const msg of candidates) {
     if (msg.role === "assistant" && msg.recipient === "api_tool.call_tool") {
       const path = connectorPathIdentity(msg.text);
       if (path.provider || path.operation) {
