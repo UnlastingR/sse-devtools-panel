@@ -1,0 +1,90 @@
+name: Release Extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag / release name
+        required: true
+        default: v1.2.6
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build extension
+        run: pnpm build
+
+      - name: Package ZIP
+        run: pnpm release:zip
+
+      - name: Prepare CRX signing key
+        env:
+          CRX_PRIVATE_KEY_PEM: ${{ secrets.CRX_PRIVATE_KEY_PEM }}
+        run: |
+          test -n "$CRX_PRIVATE_KEY_PEM"
+          umask 077
+          printf '%s' "$CRX_PRIVATE_KEY_PEM" > "$RUNNER_TEMP/crx-private-key.pem"
+
+      - name: Package CRX3
+        run: |
+          VERSION="$(node -p "require('./manifest.json').version")"
+          pnpm dlx crx3@2.0.0 \
+            -p "$RUNNER_TEMP/crx-private-key.pem" \
+            -o "website/public/releases/sse-devtools-panel-v${VERSION}.crx" \
+            dist
+
+      - name: Verify CRX3 and checksums
+        run: |
+          VERSION="$(node -p "require('./manifest.json').version")"
+          CRX="website/public/releases/sse-devtools-panel-v${VERSION}.crx"
+          ZIP="website/public/releases/sse-devtools-panel-v${VERSION}.zip"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync('manifest.json', 'utf8')).version;
+          const file = `website/public/releases/sse-devtools-panel-v${version}.crx`;
+          const data = readFileSync(file);
+          if (data.subarray(0, 4).toString('ascii') !== 'Cr24') {
+            throw new Error('Invalid CRX magic');
+          }
+          if (data.readUInt32LE(4) !== 3) {
+            throw new Error(`Expected CRX3, got version ${data.readUInt32LE(4)}`);
+          }
+          console.log(`Validated CRX3: ${file} (${data.length} bytes)`);
+          NODE
+          sha256sum "$CRX" "$ZIP" | tee SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="$(node -p "require('./manifest.json').version")"
+          CRX="website/public/releases/sse-devtools-panel-v${VERSION}.crx"
+          ZIP="website/public/releases/sse-devtools-panel-v${VERSION}.zip"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$CRX" "$ZIP" SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" "$CRX" "$ZIP" SHA256SUMS.txt \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --notes "Chromium extension release. Includes a signed CRX3 package, an offline ZIP, and SHA-256 checksums."
+          fi
