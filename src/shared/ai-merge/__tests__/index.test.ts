@@ -236,6 +236,78 @@ describe("ai-merge", () => {
             o: "add",
             v: {
               message: {
+                id: "orphan-wrapper",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: [""] },
+                metadata: { is_visually_hidden_from_conversation: true },
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "zotero-wrapper",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: [""] },
+                metadata: { is_visually_hidden_from_conversation: true },
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "zotero-api",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({
+                    path: "/zotero-mcp/link_x/zotero-mcp_search_library",
+                    args: { q: "ship track cloud" },
+                  }),
+                },
+                metadata: {
+                  parent_id: "zotero-wrapper",
+                  connector_tool_payload: '{"q":"ship track cloud"}',
+                },
+                recipient: "api_tool.call_tool",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `zotero tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.provider === "zotero-mcp", "zotero provider inferred");
+      assert(t.channels.tools[0]?.source === "plugin", "zotero source inferred");
+      assert(
+        t.channels.tools[0]?.operation === "zotero-mcp_search_library",
+        "zotero operation inferred",
+      );
+      assert(t.channels.tools[0]?.arguments.includes("ship track cloud"), "zotero args preserved");
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
                 id: "web-call",
                 author: { role: "assistant" },
                 content: { content_type: "text", parts: [""] },

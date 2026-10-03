@@ -150,6 +150,7 @@ function snapshotVendor(vendor: VendorState | null): MergeChannelsResult {
  */
 export class ConversationMergeSession {
   private offset = 0;
+  private lastConsumedEvent: EventLike | undefined;
   private url: string | undefined;
   private detection: AiProfileResult | null = null;
   private profileLocked = false;
@@ -157,6 +158,7 @@ export class ConversationMergeSession {
 
   reset(): void {
     this.offset = 0;
+    this.lastConsumedEvent = undefined;
     this.detection = null;
     this.profileLocked = false;
     this.vendor = null;
@@ -168,7 +170,10 @@ export class ConversationMergeSession {
   push(events: ReadonlyArray<EventLike>, url?: string): void {
     if (url !== undefined) this.url = url;
 
-    if (this.offset > events.length) {
+    if (
+      this.offset > events.length ||
+      (this.offset > 0 && events[this.offset - 1] !== this.lastConsumedEvent)
+    ) {
       this.reset();
     }
 
@@ -181,10 +186,12 @@ export class ConversationMergeSession {
         // Profile just resolved — process the whole stream so far.
         if (this.vendor) pushVendor(this.vendor, events);
         this.offset = events.length;
+        this.lastConsumedEvent = events.at(-1);
         return;
       }
       // Still generic: nothing to accumulate; mark consumed.
       this.offset = events.length;
+      this.lastConsumedEvent = events.at(-1);
       return;
     }
 
@@ -192,6 +199,7 @@ export class ConversationMergeSession {
     const pending = events.slice(this.offset);
     if (this.vendor) pushVendor(this.vendor, pending);
     this.offset = events.length;
+    this.lastConsumedEvent = events.at(-1);
   }
 
   snapshot(): AiConversation {

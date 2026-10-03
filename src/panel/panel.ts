@@ -30,6 +30,7 @@ import {
 } from "../shared/theme";
 import { stampReceivedAt } from "../shared/event-stamp";
 import { latestEventIdFromEvents, streamHasExplicitCompletion } from "../shared/stream-close";
+import { chatgptTurnKey, combineChatgptTurnRecords } from "../shared/chatgpt-logical-turn";
 import { SseParser, type ParsedSseEvent } from "../shared/sse-parser";
 import { NdjsonParser } from "../shared/ndjson-parser";
 import { ConnectJsonParser } from "../shared/connect-json-parser";
@@ -357,9 +358,21 @@ function onChunk(payload: StreamChunkPayload): void {
   }
   // XHR can emit very frequent tiny deltas; avoid nuking the list DOM on every chunk.
   scheduleRenderList();
-  if (state.selectedId === payload.requestId) {
+  if (
+    state.selectedId === payload.requestId ||
+    (state.activeTab === "conversation" && selectionSharesChatgptTurn(payload.requestId))
+  ) {
     scheduleRenderDetail(true);
   }
+}
+
+function selectionSharesChatgptTurn(requestId: string): boolean {
+  if (!state.selectedId || state.selectedId === requestId) return false;
+  const selected = state.streams.get(state.selectedId);
+  const changed = state.streams.get(requestId);
+  if (!selected || !changed) return false;
+  const selectedKey = chatgptTurnKey(selected);
+  return Boolean(selectedKey && selectedKey === chatgptTurnKey(changed));
 }
 
 function onEnd(payload: StreamEndPayload): void {
@@ -389,7 +402,7 @@ function onEnd(payload: StreamEndPayload): void {
     return;
   }
   renderList();
-  if (state.selectedId === payload.requestId) {
+  if (state.selectedId === payload.requestId || selectionSharesChatgptTurn(payload.requestId)) {
     renderDetail(true);
   }
 }
@@ -412,7 +425,9 @@ function onError(payload: StreamErrorPayload): void {
       return;
     }
     renderList();
-    if (state.selectedId === payload.requestId) renderDetail(true);
+    if (state.selectedId === payload.requestId || selectionSharesChatgptTurn(payload.requestId)) {
+      renderDetail(true);
+    }
     return;
   }
   record.streamStatus = "error";
@@ -426,7 +441,7 @@ function onError(payload: StreamErrorPayload): void {
     return;
   }
   renderList();
-  if (state.selectedId === payload.requestId) {
+  if (state.selectedId === payload.requestId || selectionSharesChatgptTurn(payload.requestId)) {
     renderDetail();
   }
 }
@@ -564,21 +579,26 @@ function updateConversationTabCount(record: StreamRecord | undefined): void {
     return;
   }
 
-  const streaming = record.streamStatus === "streaming";
-  const sameStream = convTabCountRequestId === record.requestId;
+  const logicalRecord = combineChatgptTurnRecords(record, state.streams.values());
+  const streaming = logicalRecord.streamStatus === "streaming";
+  const sameStream = convTabCountRequestId === logicalRecord.requestId;
   const due =
     !streaming ||
     !sameStream ||
     Date.now() - convTabCountAt >= 400 ||
-    record.events.length - convTabCountEvents >= 20 ||
+    logicalRecord.events.length - convTabCountEvents >= 20 ||
     state.activeTab === "conversation";
 
   if (!due && sameStream) return;
 
-  const merged = syncConversationMergeSession(record.requestId, record.events, record.url);
+  const merged = syncConversationMergeSession(
+    logicalRecord.requestId,
+    logicalRecord.events,
+    logicalRecord.url,
+  );
   convTabCountAt = Date.now();
-  convTabCountEvents = record.events.length;
-  convTabCountRequestId = record.requestId;
+  convTabCountEvents = logicalRecord.events.length;
+  convTabCountRequestId = logicalRecord.requestId;
 
   if (conversationHasContent(merged)) {
     elTabCountConversation.hidden = false;
@@ -734,7 +754,10 @@ function renderRequestForSelection(record: StreamRecord | undefined): void {
 }
 
 function renderConversationForSelection(record: StreamRecord | undefined): void {
-  renderConversation(record, { copyText, showToast });
+  const logicalRecord = record
+    ? combineChatgptTurnRecords(record, state.streams.values())
+    : undefined;
+  renderConversation(logicalRecord, { copyText, showToast });
 }
 
 function setupTabs(): void {

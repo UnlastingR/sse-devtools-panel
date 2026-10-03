@@ -42,4 +42,27 @@ describe("session", () => {
     session.push(events);
     assert(session.snapshot().channels.content === "Hello!", "idempotent");
   });
+
+  it("rebuilds when an earlier event is inserted before the consumed prefix", () => {
+    function chunk(content) {
+      return {
+        event: "message",
+        data: JSON.stringify({
+          id: "x",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content } }],
+        }),
+      };
+    }
+
+    const a = chunk("A");
+    const b = chunk("B");
+    const inserted = chunk("X");
+    const session = new ConversationMergeSession();
+    session.push([a, b]);
+    expect(session.snapshot().channels.content).toBe("AB");
+
+    session.push([a, inserted, b]);
+    expect(session.snapshot().channels.content).toBe("AXB");
+  });
 });

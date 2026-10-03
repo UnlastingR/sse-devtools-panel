@@ -393,6 +393,24 @@ function resourceOperation(resourceUri: string): string | undefined {
   return last ? decodeURIComponent(last) : undefined;
 }
 
+function connectorPathIdentity(text: string): {
+  provider?: string;
+  operation?: string;
+} {
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isRecord(parsed) || typeof parsed.path !== "string") return {};
+    const parts = parsed.path.split("/").filter(Boolean);
+    if (parts.length < 2) return {};
+    const provider = parts[0]?.trim() || undefined;
+    const operation = parts.at(-1)?.trim() || undefined;
+    return { provider, operation };
+  } catch {
+    return {};
+  }
+}
+
 function toolIdentity(
   tool: ChatgptMessage,
   state: ChatgptWebMergeState,
@@ -414,7 +432,7 @@ function toolIdentity(
       const uri = typeof resource.resource_uri === "string" ? resource.resource_uri : "";
       return {
         provider,
-        source: resource.contains_mcp_source === true ? "mcp" : undefined,
+        source: resource.contains_mcp_source === true ? "mcp" : "plugin",
         operation: uri ? resourceOperation(uri) : undefined,
       };
     }
@@ -428,6 +446,17 @@ function toolIdentity(
         (value): value is string => typeof value === "string" && Boolean(value.trim()),
       );
       return { provider: provider?.trim(), source: "plugin", operation: operation?.trim() };
+    }
+
+    if (msg.role === "assistant" && msg.recipient === "api_tool.call_tool") {
+      const path = connectorPathIdentity(msg.text);
+      if (path.provider || path.operation) {
+        return {
+          provider: path.provider,
+          source: "plugin",
+          operation: path.operation,
+        };
+      }
     }
   }
   return {};
@@ -542,6 +571,13 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
 
     let args = connectorPayloadForTool(msg, state);
     const identity = toolIdentity(msg, state);
+    const isEmptyHiddenWrapper =
+      msg.metadata.is_visually_hidden_from_conversation === true &&
+      msg.recipient === "functions.exec" &&
+      !identity.provider &&
+      !identity.operation &&
+      (!args || args === "{}");
+    if (isEmptyHiddenWrapper) continue;
     if (msg.recipient === "web.run") {
       const search = searchDetailsForTool(msg, state);
       if (search.queries.length > 0 || search.results.length > 0) {
