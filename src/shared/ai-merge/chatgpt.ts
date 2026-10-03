@@ -476,6 +476,54 @@ function builtinProvider(provider: string | undefined): boolean {
   return provider === "files" || provider === "python";
 }
 
+function recallToolIdentity(
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): Pick<AiToolCall, "provider" | "kind" | "operation"> | null {
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    if (msg.metadata.tool_summary_type === "personal_context") {
+      return { provider: "RECALL", kind: "builtin", operation: "SEARCH" };
+    }
+  }
+
+  const metadataHints = [
+    tool.metadata.tool_name,
+    tool.metadata.function_name,
+    tool.metadata.recipient_name,
+    tool.metadata.tool_namespace,
+  ];
+  if (
+    metadataHints.some(
+      (value) =>
+        typeof value === "string" &&
+        /(?:personal[_ -]?context|recall|memory[_ -]?search)/i.test(value),
+    )
+  ) {
+    return { provider: "RECALL", kind: "builtin", operation: "SEARCH" };
+  }
+
+  // ChatGPT currently exposes its personal-context lookup as an opaque
+  // short-lived recipient (for example `q7dr546`) rather than a stable tool
+  // name. Its public payload is a single natural-language `query`. Keep the
+  // opaque recipient as the raw tool name for debugging, but give the UI a
+  // stable product-level identity.
+  const recipient = tool.recipient?.trim() ?? "";
+  if (!/^q[a-z0-9]{6}$/i.test(recipient) || !tool.text) return null;
+  try {
+    const payload = JSON.parse(tool.text) as unknown;
+    if (!isRecord(payload) || typeof payload.query !== "string" || !payload.query.trim()) {
+      return null;
+    }
+    const keys = Object.keys(payload);
+    if (keys.length !== 1 || keys[0] !== "query") return null;
+    return { provider: "RECALL", kind: "builtin", operation: "SEARCH" };
+  } catch {
+    return null;
+  }
+}
+
 function knownMcpProvider(state: ChatgptWebMergeState, provider: string | undefined): boolean {
   if (!provider) return false;
   for (const id of state.order) {
@@ -564,6 +612,9 @@ function toolIdentity(
   tool: ChatgptMessage,
   state: ChatgptWebMergeState,
 ): Pick<AiToolCall, "provider" | "kind" | "source" | "operation"> {
+  const recallIdentity = recallToolIdentity(tool, state);
+  if (recallIdentity) return recallIdentity;
+
   const candidates: ChatgptMessage[] = [tool];
   for (const id of state.order) {
     const msg = state.messages.get(id);
@@ -741,6 +792,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
   const seenTools = new Set<string>();
   const start = reasoningStartTime(state);
   let current: AiReasoningStage | undefined;
+  let currentClosed = false;
 
   const createStage = (title: string, msg: ChatgptMessage): AiReasoningStage => {
     const stage: AiReasoningStage = {
@@ -751,6 +803,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
     };
     stages.push(stage);
     current = stage;
+    currentClosed = false;
     return stage;
   };
 
@@ -760,7 +813,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
     preferExisting: boolean,
   ): AiReasoningStage => {
     if (title) {
-      if (current?.title === title) return current;
+      if (current?.title === title && (!currentClosed || preferExisting)) return current;
       if (preferExisting) {
         for (let i = stages.length - 1; i >= 0; i -= 1) {
           if (stages[i]!.title === title) return stages[i]!;
@@ -768,7 +821,8 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       }
       return createStage(title, msg);
     }
-    return current ?? createStage("", msg);
+    if (current && !currentClosed) return current;
+    return createStage("", msg);
   };
 
   for (const id of state.order) {
@@ -860,6 +914,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       (msg.contentType === "reasoning_recap" || msg.contentType === "thoughts") &&
       msg.reasoningSummary
     ) {
+      let summaryStage: AiReasoningStage | undefined;
       for (const summary of msg.reasoningSummary
         .split("\n")
         .map((s) => s.trim())
@@ -867,12 +922,20 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
         const isDurationOnly = /^思考了\s+(?:\d+(?:\.\d+)?[hms]\s*)+$/i.test(summary);
         if (isDurationOnly) continue;
         const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
+        summaryStage = stage;
         stage.items.push({
           kind: "summary" as const,
           text: summary,
           elapsedSec: reasoningElapsedSec(msg, start),
         });
       }
+      // ChatGPT does not emit a dedicated per-stage close event. Tool-bound
+      // summaries are the reliable local boundary: they either point back to
+      // the tool through source_message_ids / parent ancestry or carry tool
+      // summary metadata. Close only those stages, not ordinary reasoning
+      // summaries, otherwise unrelated thoughts would fragment the timeline.
+      const summarizedTool = relatedLogicalTool(msg, state);
+      if (summaryStage && current === summaryStage && summarizedTool) currentClosed = true;
     }
   }
 

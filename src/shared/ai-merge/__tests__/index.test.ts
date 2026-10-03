@@ -762,6 +762,198 @@ describe("ai-merge", () => {
             o: "add",
             v: {
               message: {
+                id: "recall-call",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({ query: "find the previous SSE DevTools discussion" }),
+                },
+                metadata: {},
+                recipient: "q7dr546",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `recall tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.name === "q7dr546", "raw opaque recall recipient preserved");
+      assert(t.channels.tools[0]?.provider === "RECALL", "recall gets stable uppercase label");
+      assert(t.channels.tools[0]?.kind === "builtin", "recall classified as builtin");
+      assert(t.channels.tools[0]?.operation === "SEARCH", "recall operation normalized");
+      assert(
+        t.channels.reasoning.includes("工具 · RECALL · BUILTIN · SEARCH"),
+        "reasoning uses stable recall identity",
+      );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "recall-call",
+                author: { role: "assistant" },
+                create_time: 100,
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({ query: "restore prior SSE context" }),
+                },
+                metadata: { reasoning_start_time: 100, reasoning_title: "正在回忆" },
+                recipient: "q7dr546",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "recall-summary",
+                author: { role: "assistant" },
+                create_time: 101,
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "恢复了对话上下文", content: "hidden", finished: true }],
+                },
+                metadata: {
+                  parent_id: "recall-call",
+                  inline_cot_expandable_content: { source_message_ids: ["recall-call"] },
+                  tool_summary_type: "personal_context",
+                },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "after-recall",
+                author: { role: "assistant" },
+                create_time: 102,
+                content: { content_type: "text", parts: ["继续验证 SSE logical turn"] },
+                metadata: {},
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "after-tool",
+                author: { role: "assistant" },
+                create_time: 103,
+                content: { content_type: "code", text: "{}" },
+                metadata: { parent_id: "after-recall" },
+                recipient: "functions.exec",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.reasoningStages?.length === 2, "recall summary closes its stage");
+      assert(t.channels.reasoningStages?.[0]?.title === "正在回忆", "recall stage keeps title");
+      assert(
+        t.channels.reasoningStages?.[0]?.items.some(
+          (item) => item.kind === "summary" && item.text === "恢复了对话上下文",
+        ),
+        "recall summary stays in recall stage",
+      );
+      assert(t.channels.reasoningStages?.[1]?.title === "", "post-recall work starts a fresh stage");
+      assert(
+        t.channels.reasoningStages?.[1]?.items.some(
+          (item) => item.kind === "commentary" && item.text.includes("继续验证 SSE"),
+        ),
+        "post-recall commentary is not grouped under recall",
+      );
+      assert(
+        t.channels.reasoningStages?.[1]?.items.some(
+          (item) => item.kind === "tool" && item.text.includes("functions.exec"),
+        ),
+        "post-recall tools stay with the new stage",
+      );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "ordinary-summary",
+                author: { role: "assistant" },
+                create_time: 100,
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "整理验证方向", content: "hidden", finished: true }],
+                },
+                metadata: { reasoning_start_time: 100 },
+                recipient: "all",
+                channel: null,
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "ordinary-commentary",
+                author: { role: "assistant" },
+                create_time: 101,
+                content: { content_type: "text", parts: ["继续检查同一阶段"] },
+                metadata: {},
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.reasoningStages?.length === 1, "ordinary summary does not close stage");
+      assert(
+        t.channels.reasoningStages?.[0]?.items.some(
+          (item) => item.kind === "commentary" && item.text === "继续检查同一阶段",
+        ),
+        "ordinary follow-up remains in the same stage",
+      );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
                 id: "web-1",
                 author: { role: "assistant" },
                 create_time: 100,
