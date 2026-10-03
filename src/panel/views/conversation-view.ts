@@ -223,8 +223,11 @@ function reasoningFingerprint(merged: AiConversation): string {
     merged.channels.reasoningDurationSec ?? "",
     ...stages.map(
       (stage) =>
-        `${stage.id}:${stage.title}:${stage.elapsedSec ?? ""}:${stage.items
-          .map((item) => `${item.kind}:${item.elapsedSec ?? ""}:${item.toolId ?? ""}:${item.text}`)
+        `${stage.id}:${stage.title}:${stage.elapsedSec ?? ""}:${stage.durationSec ?? ""}:${stage.items
+          .map(
+            (item) =>
+              `${item.kind}:${item.elapsedSec ?? ""}:${item.durationSec ?? ""}:${item.durationKind ?? ""}:${item.toolId ?? ""}:${item.text}`,
+          )
           .join("~")}`,
     ),
   ].join("|");
@@ -247,6 +250,13 @@ function durationLabel(value: number): string {
   const minutes = Math.floor(value / 60);
   const seconds = Math.round(value % 60);
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function preciseDurationLabel(value: number): string {
+  if (value < 60) return `${value.toFixed(1)}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = value % 60;
+  return `${minutes}m ${seconds.toFixed(1)}s`;
 }
 
 function createReasoningPane(
@@ -293,6 +303,13 @@ function createReasoningPane(
     title.className = "reasoning-stage-title";
     title.textContent = stage.title || t("conversationReasoningUnclassified");
 
+    const stageDuration = document.createElement("span");
+    stageDuration.className = "reasoning-stage-duration";
+    stageDuration.textContent =
+      stage.durationSec == null
+        ? ""
+        : `${t("conversationReasoningDuration")} ${preciseDurationLabel(stage.durationSec)}`;
+
     const counts = document.createElement("span");
     counts.className = "reasoning-stage-counts";
     const commentaryCount = stage.items.filter((item) => item.kind === "commentary").length;
@@ -304,7 +321,7 @@ function createReasoningPane(
     if (toolCount) countBits.push(`${t("conversationReasoningTool")} ${toolCount}`);
     if (summaryCount) countBits.push(`${t("conversationReasoningSummary")} ${summaryCount}`);
     counts.textContent = countBits.join(" · ");
-    head.append(caret, time, title, counts);
+    head.append(caret, time, title, stageDuration, counts);
 
     const body = document.createElement("div");
     body.className = "reasoning-stage-body";
@@ -337,6 +354,14 @@ function createReasoningPane(
         const rowTime = document.createElement("span");
         rowTime.className = "reasoning-stage-item-time";
         rowTime.textContent = elapsedLabel(item.elapsedSec);
+        const rowDuration = document.createElement("span");
+        rowDuration.className = "reasoning-stage-item-duration";
+        rowDuration.textContent =
+          item.durationSec == null
+            ? ""
+            : item.durationKind === "inferred"
+              ? `≈${preciseDurationLabel(item.durationSec)}`
+              : `${t("conversationReasoningDuration")} ${preciseDurationLabel(item.durationSec)}`;
         const text = document.createElement(group.kind === "tool" ? "button" : "div");
         text.className = "reasoning-stage-item-text";
         if (group.kind === "tool") {
@@ -378,7 +403,7 @@ function createReasoningPane(
             text.setAttribute("disabled", "true");
           }
         }
-        row.append(rowTime, text);
+        row.append(rowTime, rowDuration, text);
         list.appendChild(row);
       });
       section.appendChild(list);

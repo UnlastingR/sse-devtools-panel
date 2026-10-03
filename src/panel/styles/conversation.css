@@ -163,7 +163,7 @@
 
 .reasoning-stage-head {
   display: grid;
-  grid-template-columns: 14px auto minmax(0, 1fr) auto;
+  grid-template-columns: 14px auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -206,11 +206,18 @@
 }
 
 .reasoning-stage-time,
-.reasoning-stage-item-time {
+.reasoning-stage-item-time,
+.reasoning-stage-duration,
+.reasoning-stage-item-duration {
   color: var(--text-faint);
   font: var(--text-xs) var(--mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.reasoning-stage-duration,
+.reasoning-stage-item-duration {
+  color: var(--text-muted);
 }
 
 .reasoning-stage-title {
@@ -262,7 +269,7 @@
 
 .reasoning-stage-item {
   display: grid;
-  grid-template-columns: minmax(52px, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(52px, auto) minmax(62px, auto) minmax(0, 1fr);
   gap: 8px;
   align-items: start;
   min-width: 0;
@@ -330,8 +337,27 @@
     grid-template-columns: 14px auto minmax(0, 1fr);
   }
 
+  .reasoning-stage-duration,
   .reasoning-stage-counts {
     grid-column: 2 / -1;
+  }
+
+  .reasoning-stage-item {
+    grid-template-columns: minmax(52px, auto) minmax(0, 1fr);
+  }
+
+  .reasoning-stage-item-duration {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .reasoning-stage-item-text {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .reasoning-stage-item-time {
+    grid-row: 1 / span 2;
   }
 }
 

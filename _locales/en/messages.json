@@ -146,6 +146,9 @@
   "conversationReasoningTotalTime": {
     "message": "Total reasoning time"
   },
+  "conversationReasoningDuration": {
+    "message": "Duration"
+  },
   "conversationReasoningExpand": {
     "message": "Expand stage details"
   },

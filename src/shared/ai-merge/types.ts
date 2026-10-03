@@ -27,6 +27,12 @@ export interface AiReasoningItem {
   kind: "commentary" | "tool" | "summary";
   text: string;
   elapsedSec?: number;
+  /** Independent duration for this item. Tool durations are measured when possible. */
+  durationSec?: number;
+  /** Whether durationSec came from an actual completion event or a timeline boundary. */
+  durationKind?: "measured" | "inferred";
+  /** Source ChatGPT message used internally to derive timing. */
+  sourceMessageId?: string;
   /** Logical tool call ID used to jump from Reasoning to the matching Tools card. */
   toolId?: string;
 }
@@ -36,6 +42,8 @@ export interface AiReasoningStage {
   /** Empty only for genuinely unclassified visible reasoning. */
   title: string;
   elapsedSec?: number;
+  /** Independent wall-clock coverage of this stage. Stages may overlap. */
+  durationSec?: number;
   items: AiReasoningItem[];
 }
 

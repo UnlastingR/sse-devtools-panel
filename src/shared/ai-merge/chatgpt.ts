@@ -7,6 +7,7 @@ type ChatgptMessage = {
   role: string;
   authorName?: string;
   createdAt?: number;
+  updatedAt?: number;
   sourceAnalysisMessageId?: string;
   recipient?: string;
   channel?: string | null;
@@ -93,6 +94,7 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState): void {
     role,
     authorName: author && typeof author.name === "string" ? author.name : existing?.authorName,
     createdAt: typeof raw.create_time === "number" ? raw.create_time : existing?.createdAt,
+    updatedAt: typeof raw.update_time === "number" ? raw.update_time : existing?.updatedAt,
     sourceAnalysisMessageId:
       rawContent && typeof rawContent.source_analysis_msg_id === "string"
         ? rawContent.source_analysis_msg_id
@@ -241,6 +243,10 @@ function applyMessagePatch(
 
   if (path === "/message/status" && typeof value === "string") {
     msg.status = value;
+    return;
+  }
+  if (path === "/message/update_time" && typeof value === "number" && Number.isFinite(value)) {
+    msg.updatedAt = value;
     return;
   }
   if (path === "/message/end_turn" && (typeof value === "boolean" || value === null)) {
@@ -795,6 +801,85 @@ function reasoningElapsedSec(msg: ChatgptMessage, start?: number): number | unde
   return Math.max(0, msg.createdAt - start);
 }
 
+function reasoningElapsedSecWithFallback(
+  msg: ChatgptMessage,
+  state: ChatgptWebMergeState,
+  start?: number,
+): number | undefined {
+  const own = reasoningElapsedSec(msg, start);
+  if (own != null) return own;
+
+  for (const id of referencedMessageIds(msg)) {
+    const referenced = state.messages.get(id);
+    if (!referenced) continue;
+    const elapsed = reasoningElapsedSec(referenced, start);
+    if (elapsed != null) return elapsed;
+  }
+
+  let next = parentId(msg);
+  const seen = new Set<string>();
+  while (next && !seen.has(next)) {
+    seen.add(next);
+    const parent = state.messages.get(next);
+    if (!parent) break;
+    const elapsed = reasoningElapsedSec(parent, start);
+    if (elapsed != null) return elapsed;
+    next = parentId(parent);
+  }
+  return undefined;
+}
+
+function messageCompletionElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
+  if (start == null) return undefined;
+  const completedAt =
+    msg.updatedAt != null && Number.isFinite(msg.updatedAt) ? msg.updatedAt : msg.createdAt;
+  if (completedAt == null || !Number.isFinite(completedAt)) return undefined;
+  return Math.max(0, completedAt - start);
+}
+
+function measuredLogicalToolDurationSec(
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+  start?: number,
+): number | undefined {
+  const toolStart = reasoningElapsedSec(tool, start);
+  if (toolStart == null) return undefined;
+
+  let completed: number | undefined;
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.id === tool.id || msg.role !== "tool") continue;
+    if (!belongsToLogicalTool(msg, tool, state)) continue;
+    const elapsed = messageCompletionElapsedSec(msg, start);
+    if (elapsed == null || elapsed < toolStart) continue;
+    completed = completed == null ? elapsed : Math.max(completed, elapsed);
+  }
+  return completed == null ? undefined : Math.max(0, completed - toolStart);
+}
+
+function reasoningEndElapsedSec(state: ChatgptWebMergeState, start?: number): number | undefined {
+  if (start == null) return undefined;
+  let max: number | undefined;
+  const reasoningStarts = new Set<number>();
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    const sessionStart = msg?.metadata.reasoning_start_time;
+    if (typeof sessionStart === "number" && Number.isFinite(sessionStart)) {
+      reasoningStarts.add(sessionStart);
+    }
+    const end = msg?.metadata.reasoning_end_time;
+    if (typeof end !== "number" || !Number.isFinite(end)) continue;
+    const elapsed = Math.max(0, end - start);
+    max = max == null ? elapsed : Math.max(max, elapsed);
+  }
+  if (max != null) return max;
+  // finished_duration_sec is a duration, not an absolute boundary. It can be
+  // used as a fallback only for a single reasoning session; summing multiple
+  // resumed sessions and treating that sum as an offset from the first start
+  // would fabricate a timestamp.
+  return reasoningStarts.size <= 1 ? reasoningDurationSec(state) : undefined;
+}
+
 function reasoningTimePrefix(elapsedSec?: number): string {
   return elapsedSec == null ? "" : `+${elapsedSec.toFixed(1)}s  `;
 }
@@ -893,7 +978,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
     const stage: AiReasoningStage = {
       id: msg.id,
       title,
-      elapsedSec: reasoningElapsedSec(msg, start),
+      elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
       items: [],
     };
     stages.push(stage);
@@ -961,10 +1046,14 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
           if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
           if (bits.length > 0) label += ` · ${bits.join(" / ")}`;
         }
+        const measuredDuration = measuredLogicalToolDurationSec(msg, state, start);
         stage.items.push({
           kind: "tool",
           text: label,
-          elapsedSec: reasoningElapsedSec(msg, start),
+          elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
+          durationSec: measuredDuration,
+          durationKind: measuredDuration == null ? undefined : "measured",
+          sourceMessageId: msg.id,
           toolId: msg.id,
         });
       }
@@ -983,7 +1072,8 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       stage.items.push({
         kind: "tool",
         text: label,
-        elapsedSec: reasoningElapsedSec(msg, start),
+        elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
+        sourceMessageId: msg.id,
         toolId: msg.id,
       });
       continue;
@@ -996,7 +1086,8 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
         stage.items.push({
           kind: "tool",
           text: clientWidgetLabel(widget),
-          elapsedSec: reasoningElapsedSec(msg, start),
+          elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
+          sourceMessageId: msg.id,
           toolId: widget.id,
         });
       }
@@ -1019,7 +1110,8 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
       stage.items.push({
         kind: "commentary",
         text: msg.text,
-        elapsedSec: reasoningElapsedSec(msg, start),
+        elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
+        sourceMessageId: msg.id,
       });
       continue;
     }
@@ -1040,6 +1132,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
           kind: "summary" as const,
           text: summary,
           elapsedSec: reasoningElapsedSec(msg, start),
+          sourceMessageId: msg.id,
         });
       }
       // ChatGPT does not emit a dedicated per-stage close event. Tool-bound
@@ -1054,17 +1147,69 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
 
   // A reasoning_title can also be emitted on bookkeeping/result messages that
   // have no user-visible detail. Do not render those as fake-expandable cards.
-  return stages.filter((stage) => stage.items.length > 0);
+  const visibleStages = stages.filter((stage) => stage.items.length > 0);
+  const orderIndex = new Map(state.order.map((id, index) => [id, index]));
+  const activeItems = visibleStages
+    .flatMap((stage) => stage.items)
+    .filter(
+      (item) => item.kind !== "summary" && item.elapsedSec != null && item.sourceMessageId != null,
+    )
+    .sort((a, b) => {
+      const elapsed = (a.elapsedSec ?? 0) - (b.elapsedSec ?? 0);
+      if (elapsed !== 0) return elapsed;
+      return (
+        (orderIndex.get(a.sourceMessageId ?? "") ?? Number.MAX_SAFE_INTEGER) -
+        (orderIndex.get(b.sourceMessageId ?? "") ?? Number.MAX_SAFE_INTEGER)
+      );
+    });
+  const reasoningEnd = reasoningEndElapsedSec(state, start);
+
+  for (let index = 0; index < activeItems.length; index += 1) {
+    const item = activeItems[index]!;
+    if (item.durationSec != null) continue;
+    const itemStart = item.elapsedSec!;
+    const nextStart = activeItems[index + 1]?.elapsedSec;
+    const inferredEnd = nextStart != null ? nextStart : reasoningEnd;
+    if (inferredEnd == null || inferredEnd < itemStart) continue;
+    item.durationSec = Math.max(0, inferredEnd - itemStart);
+    item.durationKind = "inferred";
+  }
+
+  visibleStages.forEach((stage, index) => {
+    if (stage.elapsedSec == null) return;
+    let end = stage.elapsedSec;
+    for (const item of stage.items) {
+      if (item.elapsedSec == null) continue;
+      end = Math.max(end, item.elapsedSec);
+      if (item.durationSec != null) end = Math.max(end, item.elapsedSec + item.durationSec);
+    }
+    const nextStageStart = visibleStages[index + 1]?.elapsedSec;
+    if (nextStageStart != null && nextStageStart >= stage.elapsedSec) {
+      end = Math.max(end, nextStageStart);
+    }
+    if (index === visibleStages.length - 1 && reasoningEnd != null) {
+      end = Math.max(end, reasoningEnd);
+    }
+    stage.durationSec = Math.max(0, end - stage.elapsedSec);
+  });
+
+  return visibleStages;
 }
 
 function visibleReasoningText(stages: AiReasoningStage[], duration?: number): string {
   const out: string[] = [];
   for (const stage of stages) {
     const stageTitle = stage.title || "准备";
-    out.push(`${reasoningTimePrefix(stage.elapsedSec)}阶段 · ${stageTitle}`);
+    const stageDuration =
+      stage.durationSec == null ? "" : ` · 耗时 ${stage.durationSec.toFixed(1)}s`;
+    out.push(`${reasoningTimePrefix(stage.elapsedSec)}阶段 · ${stageTitle}${stageDuration}`);
     for (const item of stage.items) {
       const prefix = item.kind === "commentary" ? "说明" : item.kind === "tool" ? "工具" : "摘要";
-      out.push(`${reasoningTimePrefix(item.elapsedSec)}${prefix} · ${item.text}`);
+      const itemDuration =
+        item.durationSec == null
+          ? ""
+          : ` · ${item.durationKind === "inferred" ? "≈" : "耗时 "}${item.durationSec.toFixed(1)}s`;
+      out.push(`${reasoningTimePrefix(item.elapsedSec)}${prefix} · ${item.text}${itemDuration}`);
     }
   }
 

@@ -146,6 +146,9 @@
   "conversationReasoningTotalTime": {
     "message": "总思考时间"
   },
+  "conversationReasoningDuration": {
+    "message": "耗时"
+  },
   "conversationReasoningExpand": {
     "message": "展开阶段详情"
   },
