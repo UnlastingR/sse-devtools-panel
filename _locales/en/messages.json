@@ -132,7 +132,7 @@
     "message": "thinking fields"
   },
   "conversationReasoningUnclassified": {
-    "message": "Unclassified stage"
+    "message": "Preparation"
   },
   "conversationReasoningCommentary": {
     "message": "Commentary"
@@ -151,6 +151,9 @@
   },
   "conversationReasoningCollapse": {
     "message": "Collapse stage details"
+  },
+  "conversationReasoningJumpToTool": {
+    "message": "Open this call in Tools"
   },
   "conversationToolsQueries": {
     "message": "Queries"

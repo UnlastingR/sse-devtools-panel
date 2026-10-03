@@ -249,7 +249,12 @@ function durationLabel(value: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function createReasoningPane(merged: AiConversation, streamId: string): HTMLElement {
+function createReasoningPane(
+  merged: AiConversation,
+  record: StreamRecord,
+  options: RenderConversationOptions,
+): HTMLElement {
+  const streamId = record.requestId;
   const pane = document.createElement("div");
   pane.className = "conversation-pane conversation-reasoning-pane";
   const stages = merged.channels.reasoningStages ?? [];
@@ -332,12 +337,46 @@ function createReasoningPane(merged: AiConversation, streamId: string): HTMLElem
         const rowTime = document.createElement("span");
         rowTime.className = "reasoning-stage-item-time";
         rowTime.textContent = elapsedLabel(item.elapsedSec);
-        const text = document.createElement(group.kind === "tool" ? "code" : "div");
+        const text = document.createElement(group.kind === "tool" ? "button" : "div");
         text.className = "reasoning-stage-item-text";
+        if (group.kind === "tool") {
+          text.classList.add("reasoning-tool-jump");
+          text.setAttribute("type", "button");
+        }
         if (group.kind === "summary" && items.length > 1) {
           text.textContent = `${index + 1}. ${item.text}`;
         } else {
           text.textContent = item.text;
+        }
+        if (group.kind === "tool" && item.toolId) {
+          const toolIndex = merged.channels.tools.findIndex((tool) => tool.id === item.toolId);
+          if (toolIndex >= 0) {
+            text.title = t("conversationReasoningJumpToTool");
+            text.addEventListener("click", () => {
+              if (toolsExpandStreamId !== streamId) {
+                toolsExpandStreamId = streamId;
+                toolsExpandedIndexes = new Set<number>();
+              }
+              toolsExpandedIndexes.add(toolIndex);
+              conversationChannel = "tools";
+              conversationFingerprint = "";
+              lastRenderedChannelText = "";
+              lastRenderedChannel = null;
+              lastToolsFingerprint = "";
+              renderConversation(record, options);
+              requestAnimationFrame(() => {
+                const toolCard = elConversationBody.querySelector<HTMLElement>(
+                  `.tool-card[data-tool-index="${toolIndex}"]`,
+                );
+                if (!toolCard) return;
+                toolCard.scrollIntoView({ block: "center", behavior: "smooth" });
+                toolCard.classList.add("is-jump-target");
+                window.setTimeout(() => toolCard.classList.remove("is-jump-target"), 1400);
+              });
+            });
+          } else {
+            text.setAttribute("disabled", "true");
+          }
         }
         row.append(rowTime, text);
         list.appendChild(row);
@@ -765,7 +804,7 @@ function mountFullConversation(
     lastToolsFingerprint = toolsFingerprint(merged);
   } else if (conversationChannel === "reasoning" && merged.channels.reasoningStages?.length) {
     disposeVirtualTextPane();
-    pane = createReasoningPane(merged, record.requestId);
+    pane = createReasoningPane(merged, record, options);
     lastRenderedChannelText = "";
     lastReasoningFingerprint = reasoningFingerprint(merged);
   } else {
@@ -875,7 +914,7 @@ export function renderConversation(
         const keepBottom = prev
           ? isNearBottom(prev.scrollTop, prev.scrollHeight, prev.clientHeight)
           : false;
-        const next = createReasoningPane(merged, record.requestId);
+        const next = createReasoningPane(merged, record, options);
         if (prev) prev.replaceWith(next);
         else existingShell.appendChild(next);
         if (keepBottom) next.scrollTop = next.scrollHeight;

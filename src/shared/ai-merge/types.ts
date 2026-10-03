@@ -19,6 +19,8 @@ export interface AiReasoningItem {
   kind: "commentary" | "tool" | "summary";
   text: string;
   elapsedSec?: number;
+  /** Logical tool call ID used to jump from Reasoning to the matching Tools card. */
+  toolId?: string;
 }
 
 export interface AiReasoningStage {

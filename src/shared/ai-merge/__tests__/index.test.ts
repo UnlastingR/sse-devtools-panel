@@ -508,6 +508,7 @@ describe("ai-merge", () => {
                 content: { content_type: "text", parts: [""] },
                 metadata: {
                   parent_id: "web-1",
+                  reasoning_title: "正在搜索 first query",
                   search_model_queries: { queries: ["first query"] },
                   search_result_groups: [
                     {
@@ -592,8 +593,8 @@ describe("ai-merge", () => {
                 id: "recap",
                 author: { role: "assistant" },
                 create_time: 105,
-                content: { content_type: "reasoning_recap", content: "思考了 5s" },
-                metadata: { parent_id: "summary", finished_duration_sec: 5 },
+                content: { content_type: "reasoning_recap", content: "思考了 2m 13s" },
+                metadata: { parent_id: "summary", finished_duration_sec: 133 },
                 recipient: "all",
                 channel: null,
               },
@@ -623,13 +624,19 @@ describe("ai-merge", () => {
       assert(t.channels.reasoningStages?.[0]?.title === "搜索网页", "first stage title");
       assert(t.channels.reasoningStages?.[1]?.title === "补充搜索", "second stage title");
       assert(
+        t.channels.reasoningStages?.[0]?.items.some(
+          (item) => item.kind === "tool" && item.toolId === "web-1",
+        ),
+        "reasoning tool keeps logical tool id for navigation",
+      );
+      assert(
         t.channels.reasoningStages?.[1]?.items.some(
           (item) => item.kind === "summary" && item.text === "已完成两轮搜索",
         ),
         "summary grouped under second stage",
       );
-      assert(t.channels.reasoning.includes("总思考时间：5s"), "duration included");
-      assert(!t.channels.reasoning.includes("思考了 5s"), "duration recap de-duplicated");
+      assert(t.channels.reasoning.includes("总思考时间：133s"), "duration included");
+      assert(!t.channels.reasoning.includes("思考了 2m 13s"), "duration recap de-duplicated");
     }
 
     {

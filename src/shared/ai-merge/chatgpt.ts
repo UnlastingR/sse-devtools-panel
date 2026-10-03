@@ -642,11 +642,25 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
     if (!msg) continue;
 
     const title = reasoningTitle(msg);
-    if (title && current?.title !== title) {
-      createStage(title, msg);
+    const relatedTool = relatedLogicalTool(msg, state);
+    const stageTitle =
+      relatedTool && relatedTool.id !== msg.id
+        ? logicalToolStageTitle(relatedTool, state) || title
+        : title;
+    if (stageTitle && current?.title !== stageTitle) {
+      createStage(stageTitle, msg);
     }
 
     if (isLogicalToolCall(msg)) {
+      const identity = toolIdentity(msg, state);
+      const args = connectorPayloadForTool(msg, state);
+      const isEmptyHiddenWrapper =
+        msg.metadata.is_visually_hidden_from_conversation === true &&
+        msg.recipient === "functions.exec" &&
+        !identity.provider &&
+        !identity.operation &&
+        (!args || args === "{}");
+      if (isEmptyHiddenWrapper) continue;
       if (!seenTools.has(msg.id)) {
         seenTools.add(msg.id);
         const toolTitle = logicalToolStageTitle(msg, state) || title;
@@ -663,6 +677,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
           kind: "tool",
           text: label,
           elapsedSec: reasoningElapsedSec(msg, start),
+          toolId: msg.id,
         });
       }
       continue;
@@ -697,7 +712,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean)) {
-        const isDurationOnly = /^思考了\s*\d+(?:\.\d+)?s$/i.test(summary);
+        const isDurationOnly = /^思考了\s+(?:\d+(?:\.\d+)?[hms]\s*)+$/i.test(summary);
         if (isDurationOnly) continue;
         const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
         stage.items.push({
@@ -715,7 +730,7 @@ function reasoningStages(state: ChatgptWebMergeState): AiReasoningStage[] {
 function visibleReasoningText(stages: AiReasoningStage[], duration?: number): string {
   const out: string[] = [];
   for (const stage of stages) {
-    const stageTitle = stage.title || "未归类";
+    const stageTitle = stage.title || "准备";
     out.push(`${reasoningTimePrefix(stage.elapsedSec)}阶段 · ${stageTitle}`);
     for (const item of stage.items) {
       const prefix = item.kind === "commentary" ? "说明" : item.kind === "tool" ? "工具" : "摘要";

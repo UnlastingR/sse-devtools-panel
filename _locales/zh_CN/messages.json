@@ -132,7 +132,7 @@
     "message": "思考字段"
   },
   "conversationReasoningUnclassified": {
-    "message": "未归类阶段"
+    "message": "准备"
   },
   "conversationReasoningCommentary": {
     "message": "说明"
@@ -151,6 +151,9 @@
   },
   "conversationReasoningCollapse": {
     "message": "收起阶段详情"
+  },
+  "conversationReasoningJumpToTool": {
+    "message": "在工具页打开此调用"
   },
   "conversationToolsQueries": {
     "message": "搜索词"
