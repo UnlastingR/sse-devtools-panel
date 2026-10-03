@@ -92,17 +92,19 @@ export function combineChatgptTurnRecords(
   const last = related.at(-1)!;
   const first = related[0]!;
   const anyStreaming = related.some((record) => record.streamStatus === "streaming");
-  const anyError = related.some((record) => record.streamStatus === "error");
+  // A physical /conversation request may fail and then be continued by
+  // /conversation/resume. The logical turn should reflect the latest physical
+  // stream's terminal state, while Raw / Events / Request keep the original
+  // transport error on the interrupted request.
+  const logicalStatus = anyStreaming ? "streaming" : last.streamStatus;
 
   return {
     ...selected,
     requestId: `chatgpt-turn:${selectedKey}`,
     startedAt: first.startedAt,
     endedAt: anyStreaming ? undefined : last.endedAt,
-    streamStatus: anyStreaming ? "streaming" : anyError ? "error" : "done",
-    errorMessage: anyError
-      ? related.find((record) => record.errorMessage)?.errorMessage
-      : undefined,
+    streamStatus: logicalStatus,
+    errorMessage: logicalStatus === "error" ? last.errorMessage : undefined,
     closeReason: anyStreaming ? undefined : last.closeReason,
     raw: "",
     events: related.flatMap((record) => record.events),

@@ -12,15 +12,22 @@ function event(data: unknown, index = 0): SseEvent {
   };
 }
 
-function record(requestId: string, startedAt: number, events: SseEvent[]): StreamRecord {
+function record(
+  requestId: string,
+  startedAt: number,
+  events: SseEvent[],
+  options: Partial<Pick<StreamRecord, "url" | "streamStatus" | "errorMessage" | "endedAt">> = {},
+): StreamRecord {
   return {
     requestId,
-    url: "https://chatgpt.com/backend-api/f/conversation",
+    url: options.url ?? "https://chatgpt.com/backend-api/f/conversation",
     method: "POST",
     transport: "fetch",
     streamKind: "sse",
     startedAt,
-    streamStatus: "done",
+    streamStatus: options.streamStatus ?? "done",
+    errorMessage: options.errorMessage,
+    endedAt: options.endedAt,
     raw: "",
     events,
   };
@@ -57,5 +64,38 @@ describe("ChatGPT logical turn grouping", () => {
     const merged = combineChatgptTurnRecords(b, [a, b]);
     expect(merged.requestId).toBe("chatgpt-turn:conv:work");
     expect(merged.events).toEqual([first, second]);
+  });
+
+  it("merges an interrupted conversation into a successful resume stream", () => {
+    const first = event({
+      type: "input_message",
+      conversation_id: "conv",
+      input_message: { metadata: { working_turn_id: "work" } },
+    });
+    const resumed = event({
+      v: {
+        message: {
+          metadata: { working_turn_id: "work" },
+        },
+      },
+      conversation_id: "conv",
+    });
+
+    const interrupted = record("a", 1, [first], {
+      streamStatus: "error",
+      errorMessage: "network error",
+      endedAt: 10,
+    });
+    const resume = record("b", 11, [resumed], {
+      url: "https://chatgpt.com/backend-api/f/conversation/resume",
+      streamStatus: "done",
+      endedAt: 20,
+    });
+
+    const merged = combineChatgptTurnRecords(resume, [interrupted, resume]);
+    expect(merged.requestId).toBe("chatgpt-turn:conv:work");
+    expect(merged.streamStatus).toBe("done");
+    expect(merged.errorMessage).toBeUndefined();
+    expect(merged.events).toEqual([first, resumed]);
   });
 });

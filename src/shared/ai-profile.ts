@@ -160,7 +160,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Only the ChatGPT Web conversation stream currently supported by the adapter. */
+/** ChatGPT Web conversation streams, including transport resume after interruption. */
 export function isChatgptConversationUrl(url: string | undefined): boolean {
   if (!url) return false;
   try {
@@ -168,10 +168,11 @@ export function isChatgptConversationUrl(url: string | undefined): boolean {
     const host = parsed.hostname.toLowerCase();
     return (
       (host === "chatgpt.com" || host.endsWith(".chatgpt.com")) &&
-      parsed.pathname === "/backend-api/f/conversation"
+      (parsed.pathname === "/backend-api/f/conversation" ||
+        parsed.pathname === "/backend-api/f/conversation/resume")
     );
   } catch {
-    return /chatgpt\.com\/backend-api\/f\/conversation(?:[?#]|$)/i.test(url);
+    return /chatgpt\.com\/backend-api\/f\/conversation(?:\/resume)?(?:[?#]|$)/i.test(url);
   }
 }
 

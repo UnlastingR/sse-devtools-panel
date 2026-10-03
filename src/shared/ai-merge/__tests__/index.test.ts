@@ -1033,7 +1033,7 @@ describe("ai-merge", () => {
         [ev("v1", "delta_encoding")],
         "https://chatgpt.com/backend-api/f/conversation/resume",
       );
-      assert(resume.profile !== "chatgpt-web", "resume is intentionally not handled yet");
+      assert(resume.profile === "chatgpt-web", "resume stream uses ChatGPT web profile");
     }
 
     {
