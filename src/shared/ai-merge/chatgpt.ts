@@ -517,7 +517,7 @@ type ClientWidget = {
 
 function clientWidgetName(ref: Record<string, unknown>, data: Record<string, unknown>): string {
   const matched = typeof ref.matched_text === "string" ? ref.matched_text : "";
-  const fromMarker = matched.match(/\uE200genui\uE202\{\"?([A-Za-z0-9_:-]+)\"?\s*:/)?.[1];
+  const fromMarker = matched.match(/\uE200genui\uE202\{"?([A-Za-z0-9_:-]+)"?\s*:/)?.[1];
   if (fromMarker) return fromMarker;
 
   const widgetType = typeof data.widget_type === "string" ? data.widget_type : "";
