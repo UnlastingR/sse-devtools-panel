@@ -531,7 +531,13 @@ function webToolCallAncestor(
 }
 
 function isStandaloneWebToolResult(msg: ChatgptMessage, state: ChatgptWebMergeState): boolean {
-  return msg.role === "tool" && msg.authorName === "web.run" && !webToolCallAncestor(msg, state);
+  if (msg.role !== "tool" || msg.authorName !== "web.run" || webToolCallAncestor(msg, state)) {
+    return false;
+  }
+  return (
+    searchQueriesFromMetadata(msg.metadata).length > 0 ||
+    searchResultsFromGroups(msg.metadata.search_result_groups).length > 0
+  );
 }
 
 function sameChatgptTurn(a: ChatgptMessage, b: ChatgptMessage): boolean {
@@ -938,6 +944,16 @@ function logicalToolStageTitle(tool: ChatgptMessage, state: ChatgptWebMergeState
   for (const id of state.order) {
     const msg = state.messages.get(id);
     if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    // Only inherit a title from the tool's transport/result/summary chain.
+    // User-visible commentary can be a later phase descended from the tool;
+    // letting it rename the earlier tool retroactively shifts stage timing.
+    const isToolChainMetadata =
+      msg.role === "tool" ||
+      msg.recipient === "api_tool.call_tool" ||
+      msg.contentType === "thoughts" ||
+      msg.contentType === "reasoning_recap" ||
+      msg.metadata.is_visually_hidden_from_conversation === true;
+    if (!isToolChainMetadata) continue;
     const title = reasoningTitle(msg);
     if (title) return title;
   }
