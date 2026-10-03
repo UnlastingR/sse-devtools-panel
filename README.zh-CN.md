@@ -388,6 +388,28 @@ pnpm build
 
 改代码时用 `pnpm dev` 监听构建，扩展管理页点「重新加载」即可。
 
+#### Windows Chrome 自托管 CRX 策略安装
+
+如果你希望通过自己的更新地址分发已签名 CRX，新版 Chrome 可能会把这类站外扩展识别为「未经验证」并禁用。此时可以通过企业策略显式允许并强制安装该扩展。
+
+以管理员身份打开命令提示符，按实际值替换占位符：
+
+```bat
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallAllowlist" /v 1 /t REG_SZ /d <EXTENSION_ID> /f
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist" /v 1 /t REG_SZ /d "<EXTENSION_ID>;<UPDATE_XML_URL>" /f
+```
+
+其中 `<UPDATE_XML_URL>` 可以指向自托管的 `updates.xml`，再由该更新清单指向已签名的 `.crx` 文件。每次发布应使用同一签名密钥，以保持扩展 ID 不变。
+
+写入后：
+
+1. 打开 `chrome://policy/`
+2. 点击「重新加载政策」
+3. 确认 `ExtensionInstallAllowlist` 与 `ExtensionInstallForcelist` 中都出现了目标扩展 ID
+4. 打开 `chrome://extensions/`，确认扩展已启用并显示为受管理状态
+
+这里 `ExtensionInstallAllowlist` 与 `ExtensionInstallForcelist` 是配合使用的：前者允许该扩展 ID，后者指定强制安装及更新地址。写入 `HKLM` 机器级策略需要管理员权限。
+
 更完整的协作说明见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ---

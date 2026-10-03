@@ -362,6 +362,28 @@ pnpm build
 
 While coding, use `pnpm dev` for watch builds, then click **Reload** on the extensions page.
 
+#### Self-hosted CRX on managed Windows Chrome
+
+If you distribute a signed CRX from your own update endpoint, recent Chrome versions may disable it as an unverified external extension unless the extension is explicitly allowed by enterprise policy.
+
+Run the following from an elevated Command Prompt, replacing the placeholders with your own extension ID and update manifest URL:
+
+```bat
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallAllowlist" /v 1 /t REG_SZ /d <EXTENSION_ID> /f
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist" /v 1 /t REG_SZ /d "<EXTENSION_ID>;<UPDATE_XML_URL>" /f
+```
+
+For example, `<UPDATE_XML_URL>` can point to a self-hosted `updates.xml` whose update entry references the signed `.crx` file. Keep the extension ID stable by signing releases with the same key.
+
+Then:
+
+1. Open `chrome://policy/`
+2. Click **Reload policies**
+3. Confirm `ExtensionInstallAllowlist` and `ExtensionInstallForcelist` both contain the expected extension ID
+4. Open `chrome://extensions/` and verify that the extension is enabled and managed
+
+This approach avoids requiring the Chrome Web Store while still using Chrome's managed-extension policy path. Administrator rights are required to write the machine-level policy keys.
+
 More collaboration notes: [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
