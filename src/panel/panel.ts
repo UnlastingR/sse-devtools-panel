@@ -877,7 +877,7 @@ function setupActions(): void {
     if (!(li instanceof HTMLLIElement) || !elList.contains(li)) return;
     const turnKey = li.dataset.turnKey;
     const target = e.target as HTMLElement | null;
-    if (turnKey && !li.dataset.id && target?.closest(".turn-group-caret")) {
+    if (turnKey && !li.dataset.id && target?.closest(".turn-group-toggle")) {
       e.preventDefault();
       if (state.expandedTurnGroups.has(turnKey)) state.expandedTurnGroups.delete(turnKey);
       else state.expandedTurnGroups.add(turnKey);

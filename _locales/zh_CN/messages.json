@@ -699,6 +699,12 @@
       }
     }
   },
+  "turnExpand": {
+    "message": "展开 Turn"
+  },
+  "turnCollapse": {
+    "message": "收起 Turn"
+  },
   "metaError": {
     "message": "错误：$MSG$",
     "placeholders": {

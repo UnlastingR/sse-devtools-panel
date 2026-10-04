@@ -3,6 +3,8 @@ import type { AiProfile, AiProfileResult, AiVendorHint } from "../ai-profile";
 export interface AiToolCall {
   index: number;
   id?: string;
+  /** Alternate transport/DIL IDs that refer to the same logical tool call. */
+  aliases?: string[];
   name?: string;
   /** User-facing integration/tool name when the transport exposes it. */
   provider?: string;

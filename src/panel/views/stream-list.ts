@@ -199,9 +199,12 @@ export function renderList(): void {
     parent.dataset.turnKey = group.key;
     parent.dataset.selectionKey = selectionKey;
     parent.dataset.preferredId = visibleRecords.at(-1)?.requestId ?? last.requestId;
+    const toggleLabel = t(expanded ? "turnCollapse" : "turnExpand");
     parent.innerHTML = `
       <div class="stream-head turn-group-head">
-        <span class="turn-group-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
+        <button type="button" class="turn-group-toggle" aria-expanded="${expanded ? "true" : "false"}" aria-label="${escapeHtml(toggleLabel)}" title="${escapeHtml(toggleLabel)}">
+          <span class="turn-group-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
+        </button>
         <div class="stream-path" title="${escapeHtml(group.key)}"><span class="method">${
           group.profile === "chatgpt-web-work" ? "WORK" : "CHAT"
         }</span>Turn · ${escapeHtml(t("turnStreamsCount", String(visibleRecords.length)))}</div>

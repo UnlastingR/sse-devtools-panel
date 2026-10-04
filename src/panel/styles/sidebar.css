@@ -157,15 +157,49 @@ select {
 }
 
 .turn-group-head {
+  align-items: center;
   cursor: pointer;
 }
 
-.turn-group-caret {
-  flex: 0 0 auto;
-  width: 12px;
+.turn-group-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin: -5px 1px -5px -5px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
   color: var(--text-faint);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-ui) var(--ease-out),
+    color var(--duration-ui) var(--ease-out),
+    transform var(--duration-ui) var(--ease-out);
+}
+
+.turn-group-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.turn-group-toggle:active {
+  transform: translateY(1px);
+}
+
+.turn-group-toggle:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.turn-group-caret {
+  display: inline-block;
+  width: 12px;
   font: 10px/1 var(--mono);
   text-align: center;
+  pointer-events: none;
 }
 
 .turn-group-children {

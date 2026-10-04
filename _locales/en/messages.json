@@ -699,6 +699,12 @@
       }
     }
   },
+  "turnExpand": {
+    "message": "Expand turn"
+  },
+  "turnCollapse": {
+    "message": "Collapse turn"
+  },
   "metaError": {
     "message": "Error: $MSG$",
     "placeholders": {

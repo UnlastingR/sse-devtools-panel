@@ -188,6 +188,15 @@
   background: var(--surface-hover);
 }
 
+.reasoning-stage-head.is-static {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  cursor: default;
+}
+
+.reasoning-stage-head.is-static:hover {
+  background: transparent;
+}
+
 .reasoning-stage-head:focus-visible {
   outline: var(--focus-ring);
   outline-offset: -2px;
@@ -343,9 +352,18 @@
     grid-template-columns: 14px auto minmax(0, 1fr);
   }
 
+  .reasoning-stage-head.is-static {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
   .reasoning-stage-duration,
   .reasoning-stage-counts {
     grid-column: 2 / -1;
+  }
+
+  .reasoning-stage-head.is-static .reasoning-stage-duration,
+  .reasoning-stage-head.is-static .reasoning-stage-counts {
+    grid-column: 1 / -1;
   }
 
   .reasoning-stage-item {

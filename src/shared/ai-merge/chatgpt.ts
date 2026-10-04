@@ -1904,18 +1904,27 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
   }
 
   const explicitCounts = new Map<string, number>();
+  const explicitIndexes = new Map<string, number[]>();
   for (const tool of out) {
     const key = `${tool.provider ?? tool.name ?? ""}:${tool.operation ?? ""}`.toLowerCase();
     explicitCounts.set(key, (explicitCounts.get(key) ?? 0) + 1);
+    const indexes = explicitIndexes.get(key) ?? [];
+    indexes.push(tool.index);
+    explicitIndexes.set(key, indexes);
   }
   const consumed = new Map<string, number>();
   for (const event of state.dilToolEvents) {
-    if (out.some((tool) => tool.id === event.id)) continue;
+    if (out.some((tool) => tool.id === event.id || tool.aliases?.includes(event.id))) continue;
     const identity = dilToolIdentity(event);
     const key = `${identity.provider ?? ""}:${identity.operation ?? ""}`.toLowerCase();
     const used = consumed.get(key) ?? 0;
     const explicit = explicitCounts.get(key) ?? 0;
     if (used < explicit) {
+      const matchedIndex = explicitIndexes.get(key)?.[used];
+      const matchedTool = matchedIndex == null ? undefined : out[matchedIndex];
+      if (matchedTool) {
+        matchedTool.aliases = Array.from(new Set([...(matchedTool.aliases ?? []), event.id]));
+      }
       consumed.set(key, used + 1);
       continue;
     }

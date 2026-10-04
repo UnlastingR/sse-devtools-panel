@@ -1963,6 +1963,10 @@ describe("ai-merge", () => {
       const devspace = t.channels.tools.filter((tool) => tool.provider === "Devspace");
       assert(devspace.length === 1, `JIT Devspace tools: ${devspace.length}`);
       assert(devspace[0]?.operation === "exec_command", "JIT operation normalized");
+      assert(
+        devspace[0]?.aliases?.includes("exec-jit:integration"),
+        "JIT tool keeps DIL alias for reasoning jump",
+      );
       const args = JSON.parse(devspace[0]!.arguments) as {
         path?: string;
         args?: { cmd?: string; workingDirectory?: string; workspaceId?: string };

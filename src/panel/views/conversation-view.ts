@@ -10,6 +10,7 @@ import { escapeHtml } from "../core/format";
 import { renderIcon } from "../core/icons";
 import { planTextPaneUpdate } from "./conversation-text";
 import { ConversationScrollMemory } from "./conversation-scroll-memory";
+import { findReasoningToolIndex, reasoningStageHasDetails } from "./conversation-reasoning";
 import {
   CONV_ROW_HEIGHT_PX,
   computeConvVirtualWindow,
@@ -279,6 +280,12 @@ function reasoningFingerprint(merged: AiConversation): string {
   return [
     merged.channels.reasoningDurationSec ?? "",
     merged.channels.reasoningDurationKind ?? "",
+    merged.channels.tools
+      .map(
+        (tool) =>
+          `${tool.id ?? ""}:${(tool.aliases ?? []).join(",")}:${tool.provider ?? ""}:${tool.operation ?? ""}`,
+      )
+      .join("~"),
     ...stages.map(
       (stage) =>
         `${stage.id}:${stage.title}:${stage.elapsedSec ?? ""}:${stage.durationSec ?? ""}:${stage.durationKind ?? ""}:${stage.items
@@ -338,20 +345,26 @@ function createReasoningPane(
   const expanded = reasoningExpandedForStream(streamId);
   for (const stage of stages) {
     const card = document.createElement("article");
-    const isOpen = expanded.has(stage.id);
-    card.className = `reasoning-stage-card ${isOpen ? "is-expanded" : "is-collapsed"}`;
+    const hasDetails = reasoningStageHasDetails(stage);
+    const isOpen = hasDetails && expanded.has(stage.id);
+    card.className = `reasoning-stage-card ${hasDetails ? (isOpen ? "is-expanded" : "is-collapsed") : "is-static"}`;
     card.dataset.stageId = stage.id;
 
-    const head = document.createElement("button");
-    head.type = "button";
-    head.className = "reasoning-stage-head";
-    head.setAttribute("aria-expanded", isOpen ? "true" : "false");
-    head.title = isOpen ? t("conversationReasoningCollapse") : t("conversationReasoningExpand");
+    const head = document.createElement(hasDetails ? "button" : "div");
+    if (head instanceof HTMLButtonElement) head.type = "button";
+    head.className = `reasoning-stage-head${hasDetails ? "" : " is-static"}`;
+    if (hasDetails) {
+      head.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      head.title = isOpen ? t("conversationReasoningCollapse") : t("conversationReasoningExpand");
+    }
 
-    const caret = document.createElement("span");
-    caret.className = "reasoning-stage-caret";
-    caret.innerHTML = renderIcon("caret", "reasoning-stage-caret-icon");
-    caret.setAttribute("aria-hidden", "true");
+    if (hasDetails) {
+      const caret = document.createElement("span");
+      caret.className = "reasoning-stage-caret";
+      caret.innerHTML = renderIcon("caret", "reasoning-stage-caret-icon");
+      caret.setAttribute("aria-hidden", "true");
+      head.appendChild(caret);
+    }
 
     const time = document.createElement("span");
     time.className = "reasoning-stage-time";
@@ -377,7 +390,7 @@ function createReasoningPane(
     if (toolCount) countBits.push(`${t("conversationReasoningTool")} ${toolCount}`);
     if (summaryCount) countBits.push(`${t("conversationReasoningSummary")} ${summaryCount}`);
     counts.textContent = countBits.join(" · ");
-    head.append(caret, time, title, stageDuration, counts);
+    head.append(time, title, stageDuration, counts);
 
     const body = document.createElement("div");
     body.className = "reasoning-stage-body";
@@ -430,7 +443,7 @@ function createReasoningPane(
           text.textContent = item.text;
         }
         if (group.kind === "tool" && item.toolId) {
-          const toolIndex = merged.channels.tools.findIndex((tool) => tool.id === item.toolId);
+          const toolIndex = findReasoningToolIndex(item, merged.channels.tools);
           if (toolIndex >= 0) {
             text.title = t("conversationReasoningJumpToTool");
             text.addEventListener("click", () => {
@@ -467,18 +480,23 @@ function createReasoningPane(
       body.appendChild(section);
     }
 
-    head.addEventListener("click", () => {
-      const nextOpen = !expanded.has(stage.id);
-      if (nextOpen) expanded.add(stage.id);
-      else expanded.delete(stage.id);
-      card.classList.toggle("is-expanded", nextOpen);
-      card.classList.toggle("is-collapsed", !nextOpen);
-      body.hidden = !nextOpen;
-      head.setAttribute("aria-expanded", nextOpen ? "true" : "false");
-      head.title = nextOpen ? t("conversationReasoningCollapse") : t("conversationReasoningExpand");
-    });
-
-    card.append(head, body);
+    if (hasDetails) {
+      head.addEventListener("click", () => {
+        const nextOpen = !expanded.has(stage.id);
+        if (nextOpen) expanded.add(stage.id);
+        else expanded.delete(stage.id);
+        card.classList.toggle("is-expanded", nextOpen);
+        card.classList.toggle("is-collapsed", !nextOpen);
+        body.hidden = !nextOpen;
+        head.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+        head.title = nextOpen
+          ? t("conversationReasoningCollapse")
+          : t("conversationReasoningExpand");
+      });
+      card.append(head, body);
+    } else {
+      card.appendChild(head);
+    }
     pane.appendChild(card);
   }
 
