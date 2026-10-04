@@ -1258,9 +1258,6 @@ function reasoningEndElapsedSec(
     const elapsed = Math.max(0, end - start);
     max = max == null ? elapsed : Math.max(max, elapsed);
   }
-  if (max != null) return max;
-  const observed = observedReasoningBounds(state);
-  if (observed.end != null && observed.end >= start) return observed.end - start;
   const latestStart = reasoningSessionStarts(state).at(-1);
   if (
     latestStart != null &&
@@ -1273,6 +1270,9 @@ function reasoningEndElapsedSec(
     const transportEnd = _observation.endedAtMs / 1000;
     if (transportEnd >= latestStart) return Math.max(0, transportEnd - start);
   }
+  if (max != null) return max;
+  const observed = observedReasoningBounds(state);
+  if (observed.end != null && observed.end >= start) return observed.end - start;
   // finished_duration_sec is a duration, not an absolute boundary. It can be
   // used as a fallback only for a single reasoning session; summing multiple
   // resumed sessions and treating that sum as an offset from the first start
