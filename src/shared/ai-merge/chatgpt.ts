@@ -1405,7 +1405,8 @@ function reasoningStages(
       (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
       msg.text
     ) {
-      const stage = stageFor(msg, reasoningStageTitle(msg, state) || "进度", false);
+      const fallbackTitle = msg.metadata.is_thinking_preamble_message === true ? "进度" : "";
+      const stage = stageFor(msg, reasoningStageTitle(msg, state) || fallbackTitle, false);
       stage.items.push({
         kind: "commentary",
         text: msg.text,
