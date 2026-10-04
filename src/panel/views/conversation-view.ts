@@ -445,7 +445,7 @@ function createReasoningPane(
               lastRenderedChannelText = "";
               lastRenderedChannel = null;
               lastToolsFingerprint = "";
-              renderConversation(record, options);
+              renderConversation(record, options, latestMerged ?? merged);
               requestAnimationFrame(() => {
                 const toolCard = elConversationBody.querySelector<HTMLElement>(
                   `.tool-card[data-tool-index="${toolIndex}"]`,
@@ -906,7 +906,7 @@ function mountFullConversation(
       lastRenderedChannel = null;
       lastToolsFingerprint = "";
       lastReasoningFingerprint = "";
-      renderConversation(record, options);
+      renderConversation(record, options, latestMerged ?? merged);
     });
     subtabs.appendChild(btn);
   }
@@ -975,8 +975,15 @@ export function renderConversation(
     rememberCurrentConversationScroll();
   }
 
+  const reusableMotherSnapshot =
+    record.requestId.startsWith("chatgpt-mother:") &&
+    lastRenderedStreamId === record.requestId &&
+    latestMerged
+      ? latestMerged
+      : null;
   const merged =
     mergedOverride ??
+    reusableMotherSnapshot ??
     syncConversationMergeSession(record.requestId, record.events, record.url, {
       endedAtMs: record.endedAt,
       streamStatus: record.streamStatus,
