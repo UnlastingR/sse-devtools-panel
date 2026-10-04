@@ -161,9 +161,6 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState, receivedAtMs?:
   };
   if (!existing) state.order.push(raw.id);
   state.messages.set(raw.id, msg);
-  if (msg.contentType === "thoughts" && msg.reasoningSummary) {
-    recordReasoningTransition(state, msg.id, msg.reasoningSummary, receivedAtMs);
-  }
   state.currentMessageId = raw.id;
   state.lastPath = "";
   state.lastOp = "";
@@ -302,7 +299,9 @@ function applyMessagePatch(
   if (/^\/message\/content\/thoughts\/\d+\/summary$/.test(path) && typeof value === "string") {
     if (op === "append") msg.reasoningSummary += value;
     else if (op === "replace" || op === "add") msg.reasoningSummary = value;
-    recordReasoningTransition(state, msg.id, msg.reasoningSummary, receivedAtMs);
+    if (!cleanReasoningStatus(msg.metadata.reasoning_title)) {
+      recordReasoningTransition(state, msg.id, msg.reasoningSummary, receivedAtMs);
+    }
     return;
   }
 
@@ -1328,8 +1327,10 @@ function reasoningStages(
       if (isEmptyHiddenWrapper) continue;
       if (!seenTools.has(msg.id)) {
         seenTools.add(msg.id);
+        const inheritedTitle = logicalToolStageTitle(msg, state) || title;
         const toolTitle =
-          logicalToolStageTitle(msg, state) || title || toolContextLabel(msg, state);
+          inheritedTitle ||
+          (!current || current.title === "进度" ? toolContextLabel(msg, state) : "");
         const stage = stageFor(msg, toolTitle, false);
         let label = toolContextLabel(msg, state);
         if (msg.recipient === "web.run") {
@@ -1361,7 +1362,12 @@ function reasoningStages(
       if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
       if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
       if (bits.length > 0) label += ` · ${bits.join(" / ")}`;
-      const stage = stageFor(msg, reasoningStageTitle(msg, state) || title || label, false);
+      const inheritedTitle = reasoningStageTitle(msg, state) || title;
+      const stage = stageFor(
+        msg,
+        inheritedTitle || (!current || current.title === "进度" ? label : ""),
+        false,
+      );
       stage.items.push({
         kind: "tool",
         text: label,

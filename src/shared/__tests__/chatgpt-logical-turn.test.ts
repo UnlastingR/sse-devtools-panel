@@ -98,14 +98,17 @@ describe("ChatGPT logical turn grouping", () => {
       conversation_id: "conv",
       input_message: { metadata: { working_turn_id: "work" } },
     });
-    const resumed = event({
-      v: {
-        message: {
-          metadata: { working_turn_id: "work" },
+    const resumed = {
+      ...event({
+        v: {
+          message: {
+            metadata: { working_turn_id: "work" },
+          },
         },
-      },
-      conversation_id: "conv",
-    });
+        conversation_id: "conv",
+      }),
+      event: "delta",
+    };
 
     const interrupted = record("a", 1, [first], {
       streamStatus: "error",
