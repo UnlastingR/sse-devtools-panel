@@ -101,6 +101,70 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
+function uploadOriginationMessageId(record: StreamRecord): string | undefined {
+  if (!isChatgptUploadStreamUrl(record.url) || !record.requestPayloadPreview) return undefined;
+  try {
+    const parsed = JSON.parse(record.requestPayloadPreview) as unknown;
+    if (!isRecord(parsed)) return undefined;
+    const libraryInfo = isRecord(parsed.library_file_info) ? parsed.library_file_info : null;
+    const id = libraryInfo?.origination_message_id;
+    return typeof id === "string" && id ? id : undefined;
+  } catch {
+    const match = record.requestPayloadPreview.match(/"origination_message_id"\s*:\s*"([^"]+)"/i);
+    return match?.[1] || undefined;
+  }
+}
+
+function chatgptInputMessageIds(record: StreamRecord): Set<string> {
+  const out = new Set<string>();
+  for (const event of record.events) {
+    const parsed = parseJson(event.data);
+    if (!parsed) continue;
+    if (parsed.type === "input_message" && isRecord(parsed.input_message)) {
+      const id = parsed.input_message.id;
+      if (typeof id === "string" && id) out.add(id);
+    }
+    if (isRecord(parsed.v) && isRecord(parsed.v.message)) {
+      const message = parsed.v.message;
+      const author = isRecord(message.author) ? message.author : null;
+      if (author?.role !== "user") continue;
+      const id = message.id;
+      if (typeof id === "string" && id) out.add(id);
+    }
+  }
+  return out;
+}
+
+function uploadOwnerConversation(
+  upload: StreamRecord,
+  records: ReadonlyArray<StreamRecord>,
+): StreamRecord | undefined {
+  if (!isChatgptUploadStreamUrl(upload.url)) return undefined;
+  const conversations = records
+    .filter((record) => isChatgptConversationUrl(record.url))
+    .sort((a, b) => a.startedAt - b.startedAt || a.requestId.localeCompare(b.requestId));
+
+  const originationMessageId = uploadOriginationMessageId(upload);
+  if (originationMessageId) {
+    const exact = conversations.find((record) =>
+      chatgptInputMessageIds(record).has(originationMessageId),
+    );
+    if (exact) return exact;
+  }
+
+  const uploadFiles = chatgptRecordFileIds(upload);
+  if (uploadFiles.size === 0) return undefined;
+  const matching = conversations.filter((record) =>
+    intersects(uploadFiles, chatgptRecordFileIds(record)),
+  );
+  if (matching.length === 0) return undefined;
+
+  // A file can remain referenced by later follow-up turns. The physical upload
+  // belongs to the first turn that consumes it, not every later turn that keeps
+  // the same attachment in context.
+  return matching.find((record) => record.startedAt >= upload.startedAt) ?? matching[0];
+}
+
 function messageMetadata(value: unknown): JsonRecord | null {
   if (!isRecord(value)) return null;
   return isRecord(value.metadata) ? value.metadata : null;
@@ -185,14 +249,7 @@ export function resolveChatgptTurnGroup(
   let anchor = selected;
   if (!isChatgptConversationUrl(anchor.url)) {
     if (!isChatgptUploadStreamUrl(anchor.url)) return null;
-    const selectedFiles = chatgptRecordFileIds(anchor);
-    anchor =
-      all.find(
-        (record) =>
-          isChatgptConversationUrl(record.url) &&
-          selectedFiles.size > 0 &&
-          intersects(selectedFiles, chatgptRecordFileIds(record)),
-      ) ?? selected;
+    anchor = uploadOwnerConversation(anchor, all) ?? selected;
     if (anchor === selected) return null;
   }
   const identity = chatgptTurnIdentity(anchor.events);
@@ -206,16 +263,12 @@ export function resolveChatgptTurnGroup(
         const other = chatgptTurnIdentity(record.events);
         return Boolean(other && chatTurnGeneration(other) === chatTurnGeneration(identity));
       });
-  const referencedFiles = new Set<string>();
-  for (const record of related) {
-    for (const id of chatgptRecordFileIds(record)) referencedFiles.add(id);
-  }
-  if (referencedFiles.size > 0) {
-    for (const record of all) {
-      if (!isChatgptUploadStreamUrl(record.url)) continue;
-      if (!intersects(referencedFiles, chatgptRecordFileIds(record))) continue;
-      if (!related.some((item) => item.requestId === record.requestId)) related.push(record);
-    }
+  const relatedIds = new Set(related.map((record) => record.requestId));
+  for (const record of all) {
+    if (!isChatgptUploadStreamUrl(record.url)) continue;
+    const owner = uploadOwnerConversation(record, all);
+    if (!owner || !relatedIds.has(owner.requestId)) continue;
+    if (!related.some((item) => item.requestId === record.requestId)) related.push(record);
   }
   related.sort((a, b) => a.startedAt - b.startedAt || a.requestId.localeCompare(b.requestId));
   const profile = isWork ? "chatgpt-web-work" : "chatgpt-web-chat";

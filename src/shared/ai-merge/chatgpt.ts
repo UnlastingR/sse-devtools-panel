@@ -1056,6 +1056,17 @@ function reasoningSessionsAllClosed(state: ChatgptWebMergeState): boolean {
   return starts.length > 0 && starts.every((start) => reasoningSessionClosed(state, start));
 }
 
+function finalAnswerStarted(state: ChatgptWebMergeState): boolean {
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg || msg.role !== "assistant" || msg.contentType !== "text") continue;
+    if (msg.metadata.is_visually_hidden_from_conversation === true) continue;
+    if (msg.recipient && msg.recipient !== "all") continue;
+    if (msg.channel === "final" || (msg.channel == null && msg.endTurn === true)) return true;
+  }
+  return false;
+}
+
 function reasoningStartTime(state: ChatgptWebMergeState): number | undefined {
   // Browser receive time is the primary clock for ChatGPT Web. Work frequently
   // leaves create_time/update_time null and may emit reasoning_start_time only
@@ -1121,6 +1132,7 @@ function inferredOpenReasoningTailSec(
   ) {
     return undefined;
   }
+  if (finalAnswerStarted(state)) return undefined;
   const latestStart = reasoningSessionStarts(state).at(-1);
   if (latestStart == null || reasoningSessionClosed(state, latestStart)) return undefined;
   const observedEndSec = observation.endedAtMs / 1000;
@@ -1249,6 +1261,18 @@ function reasoningEndElapsedSec(
   if (max != null) return max;
   const observed = observedReasoningBounds(state);
   if (observed.end != null && observed.end >= start) return observed.end - start;
+  const latestStart = reasoningSessionStarts(state).at(-1);
+  if (
+    latestStart != null &&
+    !reasoningSessionClosed(state, latestStart) &&
+    !finalAnswerStarted(state) &&
+    _observation?.endedAtMs != null &&
+    Number.isFinite(_observation.endedAtMs) &&
+    _observation.streamStatus !== "streaming"
+  ) {
+    const transportEnd = _observation.endedAtMs / 1000;
+    if (transportEnd >= latestStart) return Math.max(0, transportEnd - start);
+  }
   // finished_duration_sec is a duration, not an absolute boundary. It can be
   // used as a fallback only for a single reasoning session; summing multiple
   // resumed sessions and treating that sum as an offset from the first start
