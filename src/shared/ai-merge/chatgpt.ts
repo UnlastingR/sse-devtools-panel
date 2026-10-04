@@ -1015,6 +1015,21 @@ function toolIdentity(
   return {};
 }
 
+function isReasoningActivityMessage(msg: ChatgptMessage, state: ChatgptWebMergeState): boolean {
+  if (msg.channel === "final") return false;
+  if (msg.contentType === "thoughts" || msg.contentType === "reasoning_recap") return true;
+  if (
+    msg.metadata.reasoning_status === "is_reasoning" ||
+    msg.metadata.reasoning_status === "reasoning_ended"
+  ) {
+    return true;
+  }
+  if (msg.metadata.is_thinking_preamble_message === true) return true;
+  if (isRenderableToolCall(msg, state)) return true;
+  if (msg.role === "tool") return true;
+  return msg.role === "assistant" && msg.channel === "commentary";
+}
+
 function observedReasoningBounds(state: ChatgptWebMergeState): {
   start?: number;
   end?: number;
@@ -1028,12 +1043,17 @@ function observedReasoningBounds(state: ChatgptWebMergeState): {
   };
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg) continue;
+    if (!msg || !isReasoningActivityMessage(msg, state)) continue;
     include(msg.observedAt);
     include(msg.observedUpdatedAt);
   }
   for (const transition of state.reasoningTransitions) include(transition.observedAt);
   return { start, end };
+}
+
+function reasoningSessionsAllClosed(state: ChatgptWebMergeState): boolean {
+  const starts = reasoningSessionStarts(state);
+  return starts.length > 0 && starts.every((start) => reasoningSessionClosed(state, start));
 }
 
 function reasoningStartTime(state: ChatgptWebMergeState): number | undefined {
@@ -1112,22 +1132,24 @@ function reasoningDurationInfo(
   state: ChatgptWebMergeState,
   observation?: AiMergeObservation,
 ): { duration?: number; kind?: "measured" | "inferred" } {
+  const measured = reasoningDurationSec(state);
+  // A reasoning recap is the authoritative boundary. Once every known
+  // reasoning session is closed, never stretch the duration to the HTTP/WS
+  // stream end: final-channel text often keeps streaming long afterwards.
+  if (measured != null && reasoningSessionsAllClosed(state)) {
+    return { duration: measured, kind: "measured" };
+  }
+
   const observed = observedReasoningBounds(state);
   if (observed.start != null) {
-    const observedEnd =
-      observation?.endedAtMs != null &&
-      Number.isFinite(observation.endedAtMs) &&
-      observation.streamStatus !== "streaming"
-        ? observation.endedAtMs / 1000
-        : observed.end;
+    const observedEnd = observed.end;
     if (observedEnd != null && observedEnd >= observed.start) {
       return {
         duration: observedEnd - observed.start,
-        kind: observation?.streamStatus === "streaming" ? "inferred" : "measured",
+        kind: "inferred",
       };
     }
   }
-  const measured = reasoningDurationSec(state);
   const inferredTail = inferredOpenReasoningTailSec(state, observation);
   if (inferredTail != null) {
     return { duration: (measured ?? 0) + inferredTail, kind: "inferred" };
@@ -1211,25 +1233,6 @@ function reasoningEndElapsedSec(
   observation?: AiMergeObservation,
 ): number | undefined {
   if (start == null) return undefined;
-  const observed = observedReasoningBounds(state);
-  const observedEnd =
-    observation?.endedAtMs != null &&
-    Number.isFinite(observation.endedAtMs) &&
-    observation.streamStatus !== "streaming"
-      ? observation.endedAtMs / 1000
-      : observed.end;
-  if (observedEnd != null && observedEnd >= start) return observedEnd - start;
-  const latestStart = reasoningSessionStarts(state).at(-1);
-  if (
-    latestStart != null &&
-    !reasoningSessionClosed(state, latestStart) &&
-    observation?.endedAtMs != null &&
-    Number.isFinite(observation.endedAtMs) &&
-    observation.streamStatus !== "streaming"
-  ) {
-    const observedEnd = observation.endedAtMs / 1000;
-    if (observedEnd >= latestStart) return Math.max(0, observedEnd - start);
-  }
   let max: number | undefined;
   const reasoningStarts = new Set<number>();
   for (const id of state.order) {
@@ -1244,6 +1247,8 @@ function reasoningEndElapsedSec(
     max = max == null ? elapsed : Math.max(max, elapsed);
   }
   if (max != null) return max;
+  const observed = observedReasoningBounds(state);
+  if (observed.end != null && observed.end >= start) return observed.end - start;
   // finished_duration_sec is a duration, not an absolute boundary. It can be
   // used as a fallback only for a single reasoning session; summing multiple
   // resumed sessions and treating that sum as an offset from the first start

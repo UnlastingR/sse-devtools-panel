@@ -99,6 +99,134 @@ function findItem(result: ReturnType<typeof merged>, predicate: (text: string) =
 }
 
 describe("ChatGPT reasoning timing", () => {
+  it("stops total reasoning time at reasoning_recap before final text streaming", () => {
+    const result = merged(
+      [
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: assistant(
+                "thoughts",
+                null,
+                "all",
+                {
+                  reasoning_start_time: 100,
+                  reasoning_status: "is_reasoning",
+                },
+                {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "分析问题", content: "", finished: false }],
+                },
+                null,
+              ),
+            },
+          }),
+          "delta",
+          100_000,
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: { message: recap("recap", "thoughts", 100, 110) },
+          }),
+          "delta",
+          110_000,
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: assistant(
+                "final",
+                null,
+                "all",
+                { parent_id: "recap" },
+                { content_type: "text", parts: ["正文开始"] },
+                "final",
+              ),
+            },
+          }),
+          "delta",
+          111_000,
+        ),
+        ev(
+          JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "，继续输出很久" }),
+          "delta",
+          160_000,
+        ),
+      ],
+      { endedAtMs: 160_000, streamStatus: "done" },
+    );
+
+    expect(result.channels.reasoningDurationSec).toBe(10);
+    expect(result.channels.reasoningDurationKind).toBe("measured");
+  });
+
+  it("does not use stream end as reasoning end after final has started", () => {
+    const result = merged(
+      [
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: assistant(
+                "thoughts-open",
+                null,
+                "all",
+                { reasoning_status: "is_reasoning" },
+                {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "Thinking", content: "", finished: false }],
+                },
+                null,
+              ),
+            },
+          }),
+          "delta",
+          200_000,
+        ),
+        ev(
+          JSON.stringify({
+            o: "patch",
+            v: [
+              { p: "/message/content/thoughts/0/summary", o: "replace", v: "完成分析" },
+              { p: "/message/content/thoughts/0/finished", o: "replace", v: true },
+            ],
+          }),
+          "delta",
+          212_000,
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: assistant(
+                "final-fallback",
+                null,
+                "all",
+                { parent_id: "thoughts-open" },
+                { content_type: "text", parts: ["最终回答"] },
+                "final",
+              ),
+            },
+          }),
+          "delta",
+          213_000,
+        ),
+        ev(
+          JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "后续正文" }),
+          "delta",
+          260_000,
+        ),
+      ],
+      { endedAtMs: 260_000, streamStatus: "done" },
+    );
+
+    expect(result.channels.reasoningDurationSec).toBe(12);
+    expect(result.channels.reasoningDurationKind).toBe("inferred");
+  });
+
   it("tracks Work thought title replacements instead of keeping stale Thinking", () => {
     const result = merged([
       add(
