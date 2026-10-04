@@ -1690,7 +1690,7 @@ function reasoningStages(
           inheritedTitle ||
           (!current || current.title === "进度" ? toolContextLabel(msg, state) : "");
         const stage = stageFor(msg, toolTitle, false);
-        let label = canonical ? reasoningToolLabel(canonical) : toolContextLabel(msg, state);
+        let label = toolContextLabel(msg, state);
         if (msg.recipient === "web.run") {
           const search = searchDetailsForTool(msg, state);
           const bits: string[] = [];
@@ -1749,7 +1749,7 @@ function reasoningStages(
         seenTools.add(dedupeKey);
         stage.items.push({
           kind: "tool",
-          text: canonical ? reasoningToolLabel(canonical) : clientWidgetLabel(widget),
+          text: clientWidgetLabel(widget),
           elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
           sourceMessageId: msg.id,
           toolId: canonical?.id ?? widget.id,
