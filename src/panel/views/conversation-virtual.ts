@@ -56,8 +56,14 @@ export function computeConvVirtualWindow(
   if (rowCount <= 0 || rowHeight <= 0) {
     return { start: 0, end: 0, paddingTop: 0, paddingBottom: 0 };
   }
-  const safeScrollTop = Math.max(0, scrollTop);
   const safeViewport = Math.max(0, viewportHeight);
+  const logicalHeight = rowCount * rowHeight;
+  const maxLogicalScroll = Math.max(0, logicalHeight - safeViewport);
+  // When streamed content is replaced by a shorter snapshot, the DOM may
+  // still report the previous (larger) scrollTop for one paint. Clamp to the
+  // new logical document before deriving spacers; otherwise `start` can land
+  // beyond rowCount and create a huge phantom top spacer.
+  const safeScrollTop = Math.min(Math.max(0, scrollTop), maxLogicalScroll);
   const start = Math.max(0, Math.floor(safeScrollTop / rowHeight) - overscan);
   const visibleCount = Math.ceil(safeViewport / rowHeight) + 1;
   const end = Math.min(rowCount, start + visibleCount + overscan * 2);

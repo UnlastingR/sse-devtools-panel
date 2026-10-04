@@ -474,7 +474,7 @@ describe("ai-merge", () => {
         ev("[DONE]"),
       ];
       const det = detectAiProfile(events, "https://chatgpt.com/backend-api/f/conversation");
-      assert(det.profile === "chatgpt-web", `chatgpt profile got ${det.profile}`);
+      assert(det.profile === "chatgpt-web-chat", `chatgpt profile got ${det.profile}`);
       assert(det.vendorHint === "openai", `chatgpt vendor got ${det.vendorHint}`);
       const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
       assert(
@@ -836,6 +836,79 @@ describe("ai-merge", () => {
         t.channels.reasoning.includes("工具 · web.run · SEARCH · 1 个查询 / 1 个结果"),
         "standalone web appears in reasoning timeline",
       );
+    }
+
+    {
+      const events = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "view-result",
+                author: { role: "tool", name: "web.run" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  request_id: "req-view",
+                  working_turn_id: "turn-view",
+                  search_model_queries: { queries: [] },
+                  search_result_groups: [
+                    {
+                      domain: "energy.gov",
+                      entries: [
+                        {
+                          title: "Energy page",
+                          url: "https://energy.gov/page",
+                          snippet: "one page",
+                          ref_id: { ref_type: "view", ref_index: 0 },
+                        },
+                      ],
+                    },
+                  ],
+                },
+                recipient: "all",
+              },
+            },
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "final-union",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: ["done"] },
+                metadata: {
+                  request_id: "req-view",
+                  working_turn_id: "turn-view",
+                  search_result_groups: [
+                    {
+                      domain: "example.com",
+                      entries: Array.from({ length: 97 }, (_, i) => ({
+                        title: `Historical ${i}`,
+                        url: `https://example.com/${i}`,
+                        snippet: "old search result",
+                      })),
+                    },
+                  ],
+                },
+                recipient: "all",
+                channel: "final",
+                end_turn: true,
+              },
+            },
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+      const view = t.channels.tools.find((tool) => tool.provider === "web.run");
+      assert(view?.operation === "VIEW", "standalone result-only web call classified as VIEW");
+      const args = JSON.parse(view!.arguments);
+      assert(args.results.length === 1, "VIEW keeps only its direct result groups");
     }
 
     {
@@ -1510,7 +1583,130 @@ describe("ai-merge", () => {
         [ev("v1", "delta_encoding")],
         "https://chatgpt.com/backend-api/f/conversation/resume",
       );
-      assert(resume.profile === "chatgpt-web", "resume stream uses ChatGPT web profile");
+      assert(resume.profile === "generic", "ambiguous resume bootstrap does not lock subtype");
+
+      const normalChat = detectAiProfile(
+        [
+          ev("v1", "delta_encoding"),
+          ev(
+            JSON.stringify({
+              o: "add",
+              v: {
+                message: {
+                  id: "chat-message",
+                  author: { role: "assistant" },
+                  content: { content_type: "text", parts: [""] },
+                  metadata: { working_turn_id: "chat-turn" },
+                  recipient: "all",
+                },
+              },
+              conversation_id: "conv",
+            }),
+            "delta",
+          ),
+        ],
+        "https://chatgpt.com/backend-api/f/conversation",
+      );
+      assert(normalChat.profile === "chatgpt-web-chat", "normal ChatGPT SSE uses chat profile");
+
+      const work = detectAiProfile(
+        [
+          ev("v1", "delta_encoding"),
+          ev(
+            JSON.stringify({
+              type: "stream_handoff",
+              conversation_id: "conv",
+              turn_exchange_id: "work-turn",
+              options: [{ type: "subscribe_ws_topic", topic_id: "conversation-turn-work" }],
+            }),
+          ),
+          ev(
+            JSON.stringify({
+              type: "server_ste_metadata",
+              metadata: {
+                requested_model_experience: "work",
+                product_experience: "work",
+                turn_mode: "projects",
+              },
+              conversation_id: "conv",
+            }),
+          ),
+        ],
+        "https://chatgpt.com/backend-api/f/conversation",
+      );
+      assert(work.profile === "chatgpt-web-work", "Work handoff uses Work profile");
+    }
+
+    {
+      const directMcp = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "direct-devspace-call",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({
+                    path: "/asdk_app_x/link_y/open_workspace",
+                    args: { mode: "checkout", path: "/root/codex" },
+                  }),
+                },
+                metadata: {
+                  working_turn_id: "work",
+                  turn_exchange_id: "exchange",
+                  is_temporal_turn: true,
+                  stream_topic_id: "conversation-turn-work",
+                  async_source: "server:conversation-turn-work:US",
+                },
+                recipient: "api_tool.call_tool",
+                channel: "commentary",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "direct-devspace-result",
+                author: { role: "tool", name: "api_tool.call_tool" },
+                content: { content_type: "code", text: "{}" },
+                metadata: {
+                  parent_id: "direct-devspace-call",
+                  connector_type: "MCP",
+                  invoked_resource: {
+                    app_name: "Devspace",
+                    resource_uri: "/asdk_app_x/link_y/open_workspace",
+                  },
+                  chatgpt_sdk: { html_asset_pointer: "ui://devspace/workspace-app/v2.html" },
+                },
+                recipient: "all",
+                channel: "commentary",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(directMcp, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.profile === "chatgpt-web-work", "direct MCP call stays in Work profile");
+      assert(t.channels.tools.length === 1, `direct MCP tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.provider === "Devspace", "direct MCP app name restored");
+      assert(t.channels.tools[0]?.kind === "app", "direct MCP classified as app");
+      assert(t.channels.tools[0]?.source === "mcp", "direct MCP source restored");
+      assert(t.channels.tools[0]?.operation === "open_workspace", "direct MCP operation restored");
+      assert(t.channels.tools[0]?.presentation === "app_ui", "direct MCP UI restored");
+      assert(
+        t.channels.reasoning.includes("Devspace · APP · MCP · UI · open_workspace"),
+        "direct MCP call appears in reasoning timeline",
+      );
     }
 
     {

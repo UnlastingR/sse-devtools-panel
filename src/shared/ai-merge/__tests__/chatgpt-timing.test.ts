@@ -99,6 +99,55 @@ function findItem(result: ReturnType<typeof merged>, predicate: (text: string) =
 }
 
 describe("ChatGPT reasoning timing", () => {
+  it("tracks Work thought title replacements instead of keeping stale Thinking", () => {
+    const result = merged([
+      add(
+        assistant(
+          "thoughts",
+          100,
+          "all",
+          {
+            reasoning_start_time: 100,
+            dil_v2_reasoning: {
+              appData: { title: "Worked", current_status: "Thinking" },
+            },
+          },
+          {
+            content_type: "thoughts",
+            thoughts: [{ summary: "Thinking", content: "", finished: false }],
+          },
+          null,
+        ),
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/content/thoughts/0/summary",
+              o: "replace",
+              v: "检查仓库状态",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "replace",
+              v: "检查仓库状态",
+            },
+          ],
+        }),
+        "delta",
+        105_000,
+      ),
+      add(recap("recap", "thoughts", 100, 110)),
+    ]);
+
+    expect(result.channels.reasoning).not.toContain("Thinking");
+    expect(result.channels.reasoning).toContain("检查仓库状态");
+    expect(result.channels.reasoningStages?.some((stage) => stage.title === "检查仓库状态")).toBe(
+      true,
+    );
+  });
+
   it("measures Python through the tool result update_time, not its first result chunk", () => {
     const result = merged([
       add(

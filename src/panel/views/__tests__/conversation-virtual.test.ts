@@ -23,6 +23,11 @@ describe("conversation-virtual", () => {
     assert(win.end > 0 && win.end < 1000, "end windowed");
     assert(win.paddingBottom === (1000 - win.end) * 18, "pad bottom");
 
+    const shrunk = computeConvVirtualWindow(10_000, 360, 12, 18, 2);
+    assert(shrunk.start <= 12, "stale scrollTop clamps inside new row range");
+    assert(shrunk.end >= shrunk.start, "virtual window remains ordered after shrink");
+    assert(shrunk.paddingTop <= 12 * 18, "no phantom top spacer after content shrink");
+
     assert(estimateCols(400) >= 20, "cols");
   });
 });

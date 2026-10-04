@@ -3,7 +3,8 @@ import type { SseEvent } from "./types";
 /** Conversation merge protocol family. */
 export type AiProfile =
   | "openai-compatible"
-  | "chatgpt-web"
+  | "chatgpt-web-chat"
+  | "chatgpt-web-work"
   | "deepseek-web"
   | "doubao-web"
   | "kimi-web"
@@ -116,7 +117,47 @@ const CHATGPT_WEB_TYPES = new Set([
   "conversation_detail_metadata",
   "safety_review_update",
   "url_moderation",
+  "stream_handoff",
 ]);
+
+function chatgptMessageMetadata(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return isRecord(value.metadata) ? value.metadata : null;
+}
+
+function isChatgptWorkMetadata(metadata: Record<string, unknown> | null): boolean {
+  if (!metadata) return false;
+  if (metadata.is_temporal_turn === true) return true;
+  if (
+    typeof metadata.async_source === "string" &&
+    typeof metadata.stream_topic_id === "string" &&
+    metadata.stream_topic_id.startsWith("conversation-turn-")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isChatgptWorkSignal(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.type === "server_ste_metadata" && isRecord(value.metadata)) {
+    const metadata = value.metadata;
+    if (metadata.requested_model_experience === "work" || metadata.product_experience === "work") {
+      return true;
+    }
+    if (metadata.turn_mode === "projects" || metadata.turn_use_case === "connectors") return true;
+    if (metadata.temporal_conversation_turn === true || metadata.resume_with_websockets === true) {
+      return true;
+    }
+  }
+  if (value.type === "input_message" && isRecord(value.input_message)) {
+    if (isChatgptWorkMetadata(chatgptMessageMetadata(value.input_message))) return true;
+  }
+  if (isRecord(value.v) && isRecord(value.v.message)) {
+    if (isChatgptWorkMetadata(chatgptMessageMetadata(value.v.message))) return true;
+  }
+  return false;
+}
 
 const KIMI_WEB_MASKS = new Set([
   "chat.lastRequest",
@@ -415,6 +456,8 @@ export function detectAiProfile(
   const reasoningFields = new Set<string>();
   let openaiHits = 0;
   let chatgptHits = 0;
+  let chatgptSubtypeEvidence = 0;
+  let chatgptWorkHits = 0;
   let deepseekHits = 0;
   let doubaoHits = 0;
   let kimiHits = 0;
@@ -443,7 +486,20 @@ export function detectAiProfile(
 
     const parsed = tryParseJson(ev.data);
     if (parsed == null) continue;
-    if (chatgptConversation && isChatgptWebChunk(parsed, ev.event)) chatgptHits += 2;
+    if (chatgptConversation && isChatgptWebChunk(parsed, ev.event)) {
+      chatgptHits += 2;
+      if (
+        isRecord(parsed) &&
+        (parsed.type === "input_message" ||
+          (ev.event === "delta" && isRecord(parsed.v) && isRecord(parsed.v.message)))
+      ) {
+        chatgptSubtypeEvidence++;
+      }
+    }
+    if (chatgptConversation && isChatgptWorkSignal(parsed)) {
+      chatgptWorkHits += 10;
+      chatgptSubtypeEvidence++;
+    }
     if (isOpenAiCompatibleChunk(parsed)) {
       openaiHits++;
       collectReasoningFields(parsed, reasoningFields);
@@ -483,7 +539,10 @@ export function detectAiProfile(
 
   const scores: Array<{ profile: AiProfile; score: number }> = [
     { profile: "openai-compatible", score: openaiHits },
-    { profile: "chatgpt-web", score: chatgptHits },
+    {
+      profile: chatgptWorkHits > 0 ? "chatgpt-web-work" : "chatgpt-web-chat",
+      score: chatgptHits,
+    },
     { profile: "deepseek-web", score: deepseekHits },
     { profile: "doubao-web", score: doubaoHits },
     { profile: "kimi-web", score: kimiHits },
@@ -501,7 +560,16 @@ export function detectAiProfile(
   // {p,o,v}/{v} patches overlap DeepSeek's web patch shape. Host + one
   // ChatGPT-specific signal is authoritative and avoids that false positive.
   if (chatgptConversation && chatgptHits >= 1) {
-    profile = "chatgpt-web";
+    // Do not lock an HTTP ChatGPT stream from only delta_encoding / resume-token
+    // bootstrap frames. Work and normal chat share that prefix; wait until a
+    // real message or a Work-only handoff/metadata signal appears.
+    if (chatgptWorkHits > 0) {
+      profile = "chatgpt-web-work";
+    } else if (chatgptSubtypeEvidence > 0) {
+      profile = "chatgpt-web-chat";
+    } else {
+      profile = "generic";
+    }
   }
 
   // Prefer kimi-web on moonshot/kimi hosts when Connect frames are present.
@@ -525,8 +593,9 @@ export function detectAiProfile(
   }
 
   let resolvedVendor = vendorHint;
-  if (profile === "chatgpt-web") resolvedVendor = "openai";
-  else if (profile === "deepseek-web") resolvedVendor = "deepseek";
+  if (profile === "chatgpt-web-chat" || profile === "chatgpt-web-work") {
+    resolvedVendor = "openai";
+  } else if (profile === "deepseek-web") resolvedVendor = "deepseek";
   else if (profile === "doubao-web") resolvedVendor = "doubao-web";
   else if (profile === "kimi-web") resolvedVendor = "moonshot";
   else if (profile === "qwen-web") resolvedVendor = "qwen";

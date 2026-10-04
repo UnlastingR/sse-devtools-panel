@@ -29,6 +29,12 @@ type ChatgptMessage = {
   endTurn?: boolean | null;
 };
 
+type ReasoningTransition = {
+  messageId: string;
+  text: string;
+  observedAt?: number;
+};
+
 const CHATGPT_RICH_BLOCK_RE = /\uE200([A-Za-z0-9_:-]+)\uE202[\s\S]*?\uE201/g;
 const CHATGPT_RICH_BLOCK_TAIL_RE = /\uE200[A-Za-z0-9_:-]*\uE202[^\uE201]*$/g;
 
@@ -53,7 +59,31 @@ export type ChatgptWebMergeState = {
   lastOp: string;
   endMeta: AiEndMeta;
   chunkCount: number;
+  reasoningTransitions: ReasoningTransition[];
 };
+
+function cleanReasoningStatus(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const text = value.replace(/[\u2066-\u2069]/g, "").trim();
+  if (!text) return "";
+  if (/^(?:thinking|worked)$/i.test(text)) return "";
+  if (/^(?:using|used)\s+.+?\s+integration$/i.test(text)) return "";
+  return text;
+}
+
+function recordReasoningTransition(
+  state: ChatgptWebMergeState,
+  messageId: string,
+  value: unknown,
+  receivedAtMs?: number,
+): void {
+  const text = cleanReasoningStatus(value);
+  if (!text) return;
+  const observedAt = observedSeconds(receivedAtMs);
+  const last = state.reasoningTransitions.at(-1);
+  if (last?.messageId === messageId && last.text === text) return;
+  state.reasoningTransitions.push({ messageId, text, observedAt });
+}
 
 function messageText(content: unknown): {
   contentType?: string;
@@ -131,6 +161,9 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState, receivedAtMs?:
   };
   if (!existing) state.order.push(raw.id);
   state.messages.set(raw.id, msg);
+  if (msg.contentType === "thoughts" && msg.reasoningSummary) {
+    recordReasoningTransition(state, msg.id, msg.reasoningSummary, receivedAtMs);
+  }
   state.currentMessageId = raw.id;
   state.lastPath = "";
   state.lastOp = "";
@@ -266,6 +299,13 @@ function applyMessagePatch(
     return;
   }
 
+  if (/^\/message\/content\/thoughts\/\d+\/summary$/.test(path) && typeof value === "string") {
+    if (op === "append") msg.reasoningSummary += value;
+    else if (op === "replace" || op === "add") msg.reasoningSummary = value;
+    recordReasoningTransition(state, msg.id, msg.reasoningSummary, receivedAtMs);
+    return;
+  }
+
   if (path === "/message/status" && typeof value === "string") {
     msg.status = value;
     return;
@@ -294,6 +334,12 @@ function applyMessagePatch(
     (op === "add" || op === "replace" || op === "append" || op === "remove")
   ) {
     applyMetadataPath(msg.metadata, path.slice(metadataPrefix.length), op, value);
+    if (
+      path === "/message/metadata/dil_v2_reasoning/appData/current_status" ||
+      path === "/message/metadata/dil_v2_reasoning/appData/title"
+    ) {
+      recordReasoningTransition(state, msg.id, value, receivedAtMs);
+    }
     if (path === "/message/metadata/thinking_effort" && typeof value === "string") {
       state.endMeta.thinkingEffort = value;
     }
@@ -393,6 +439,48 @@ function logicalToolParent(
     next = parentId(parent);
   }
   return undefined;
+}
+
+function belongsToApiToolCall(
+  candidate: ChatgptMessage,
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): boolean {
+  if (candidate.id === tool.id) return true;
+  let next = parentId(candidate);
+  const seen = new Set<string>();
+  while (next && !seen.has(next)) {
+    seen.add(next);
+    const parent = state.messages.get(next);
+    if (!parent) return false;
+    if (parent.role === "assistant" && parent.recipient === "api_tool.call_tool") {
+      return parent.id === tool.id;
+    }
+    if (parent.role === "assistant" && parent.recipient && parent.recipient !== "all") {
+      return false;
+    }
+    next = parentId(parent);
+  }
+  return false;
+}
+
+function belongsToToolCall(
+  candidate: ChatgptMessage,
+  tool: ChatgptMessage,
+  state: ChatgptWebMergeState,
+): boolean {
+  return tool.recipient === "api_tool.call_tool"
+    ? belongsToApiToolCall(candidate, tool, state)
+    : belongsToLogicalTool(candidate, tool, state);
+}
+
+function isRenderableToolCall(msg: ChatgptMessage, state: ChatgptWebMergeState): boolean {
+  if (isLogicalToolCall(msg)) return true;
+  return (
+    msg.role === "assistant" &&
+    msg.recipient === "api_tool.call_tool" &&
+    logicalToolParent(msg, state) == null
+  );
 }
 
 function searchQueriesFromMetadata(metadata: Record<string, unknown>): string[] {
@@ -625,10 +713,20 @@ function standaloneWebSearchDetails(
     }
   };
   ingest(tool);
-  for (const id of state.order) {
-    const msg = state.messages.get(id);
-    if (!msg || msg.id === tool.id || !sameChatgptTurn(msg, tool)) continue;
-    ingest(msg);
+  // Direct result groups on the tool message are authoritative. Only look
+  // forward for a fallback result payload when the tool itself carries none;
+  // final assistant messages may contain the union of all prior search refs,
+  // which must not be attributed to the last VIEW call.
+  if (results.length === 0) {
+    const startIndex = state.order.indexOf(tool.id);
+    for (let i = startIndex + 1; i < state.order.length; i += 1) {
+      const msg = state.messages.get(state.order[i]!);
+      if (!msg || !sameChatgptTurn(msg, tool)) continue;
+      if (isStandaloneWebToolResult(msg, state) || msg.recipient === "web.run") break;
+      const before = results.length;
+      ingest(msg);
+      if (results.length > before) break;
+    }
   }
   return { queries, results };
 }
@@ -700,13 +798,20 @@ function toolUiDetails(
   const candidates: ChatgptMessage[] = [tool];
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    if (!msg || msg.id === tool.id) continue;
+    const related = belongsToToolCall(msg, tool, state);
+    if (!related) continue;
     candidates.push(msg);
   }
 
   for (const msg of candidates) {
     const sdk = isRecord(msg.metadata.chatgpt_sdk) ? msg.metadata.chatgpt_sdk : null;
-    const pointer = sdk && typeof sdk.html_asset_pointer === "string" ? sdk.html_asset_pointer : "";
+    const pointer =
+      sdk && typeof sdk.html_asset_pointer === "string"
+        ? sdk.html_asset_pointer
+        : typeof msg.metadata.html_asset_pointer === "string"
+          ? msg.metadata.html_asset_pointer
+          : "";
     if (pointer) return { presentation: "app_ui", uiResource: pointer };
   }
   return {};
@@ -778,7 +883,9 @@ function toolIdentity(
   const candidates: ChatgptMessage[] = [tool];
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    if (!msg || msg.id === tool.id) continue;
+    const related = belongsToToolCall(msg, tool, state);
+    if (!related) continue;
     candidates.push(msg);
   }
 
@@ -795,10 +902,21 @@ function toolIdentity(
       const uri = typeof resource.resource_uri === "string" ? resource.resource_uri : "";
       if (!provider && uri.startsWith("/files/")) provider = "files";
       const kind: AiToolCall["kind"] = builtinProvider(provider) ? "builtin" : "app";
+      const sdk = isRecord(msg.metadata.chatgpt_sdk) ? msg.metadata.chatgpt_sdk : null;
+      const connectorType =
+        typeof msg.metadata.connector_type === "string"
+          ? msg.metadata.connector_type
+          : sdk && typeof sdk.connector_type === "string"
+            ? sdk.connector_type
+            : undefined;
       return {
         provider,
         kind,
-        source: kind === "app" && resource.contains_mcp_source === true ? "mcp" : undefined,
+        source:
+          kind === "app" &&
+          (resource.contains_mcp_source === true || connectorType?.toUpperCase() === "MCP")
+            ? "mcp"
+            : undefined,
         operation: uri ? resourceOperation(uri) : undefined,
       };
     }
@@ -971,7 +1089,7 @@ function measuredLogicalToolDurationSec(
   for (const id of state.order) {
     const msg = state.messages.get(id);
     if (!msg || msg.id === tool.id || msg.role !== "tool") continue;
-    if (!belongsToLogicalTool(msg, tool, state)) continue;
+    if (!belongsToToolCall(msg, tool, state)) continue;
     const elapsed = messageCompletionElapsedSec(msg, start);
     if (elapsed == null || elapsed < toolStart) continue;
     completed = completed == null ? elapsed : Math.max(completed, elapsed);
@@ -1022,9 +1140,15 @@ function reasoningTimePrefix(elapsedSec?: number): string {
 }
 
 function reasoningTitle(msg: ChatgptMessage): string {
-  return typeof msg.metadata.reasoning_title === "string"
-    ? msg.metadata.reasoning_title.trim()
-    : "";
+  const explicit = cleanReasoningStatus(msg.metadata.reasoning_title);
+  if (explicit) return explicit;
+  const dil = isRecord(msg.metadata.dil_v2_reasoning) ? msg.metadata.dil_v2_reasoning : null;
+  const appData = dil && isRecord(dil.appData) ? dil.appData : null;
+  return cleanReasoningStatus(appData?.current_status) || cleanReasoningStatus(appData?.title);
+}
+
+function isPlaceholderReasoningSummary(text: string): boolean {
+  return !cleanReasoningStatus(text);
 }
 
 function referencedMessageIds(msg: ChatgptMessage): string[] {
@@ -1076,7 +1200,7 @@ function logicalToolStageTitle(tool: ChatgptMessage, state: ChatgptWebMergeState
   if (own) return own;
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    if (!msg || msg.id === tool.id || !belongsToToolCall(msg, tool, state)) continue;
     // Only inherit a title from the tool's transport/result/summary chain.
     // User-visible commentary can be a later phase descended from the tool;
     // letting it rename the earlier tool retroactively shifts stage timing.
@@ -1161,13 +1285,29 @@ function reasoningStages(
     const msg = state.messages.get(id);
     if (!msg) continue;
 
+    const transitions = state.reasoningTransitions.filter((item) => item.messageId === msg.id);
+    for (const transition of transitions) {
+      const elapsedSec =
+        start != null && transition.observedAt != null
+          ? Math.max(0, transition.observedAt - start)
+          : reasoningElapsedSecWithFallback(msg, state, start);
+      const stage = stageFor(msg, transition.text, false);
+      stage.elapsedSec = elapsedSec;
+      stage.items.push({
+        kind: "summary",
+        text: transition.text,
+        elapsedSec,
+        sourceMessageId: msg.id,
+      });
+    }
+
     const title = reasoningTitle(msg);
     // Only events that actually *start* visible work should advance the
     // current stage. Tool summaries/results often arrive later with
     // create_time=null and repeat an earlier reasoning_title; eagerly creating
     // a stage for those produces duplicate title-only cards with no timestamp.
     const startsVisibleStage =
-      isLogicalToolCall(msg) ||
+      isRenderableToolCall(msg, state) ||
       (msg.role === "assistant" &&
         msg.contentType === "text" &&
         (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
@@ -1176,7 +1316,7 @@ function reasoningStages(
       createStage(title, msg);
     }
 
-    if (isLogicalToolCall(msg)) {
+    if (isRenderableToolCall(msg, state)) {
       const identity = toolIdentity(msg, state);
       const args = connectorPayloadForTool(msg, state);
       const isEmptyHiddenWrapper =
@@ -1188,7 +1328,8 @@ function reasoningStages(
       if (isEmptyHiddenWrapper) continue;
       if (!seenTools.has(msg.id)) {
         seenTools.add(msg.id);
-        const toolTitle = logicalToolStageTitle(msg, state) || title;
+        const toolTitle =
+          logicalToolStageTitle(msg, state) || title || toolContextLabel(msg, state);
         const stage = stageFor(msg, toolTitle, false);
         let label = toolContextLabel(msg, state);
         if (msg.recipient === "web.run") {
@@ -1214,13 +1355,13 @@ function reasoningStages(
 
     if (isStandaloneWebToolResult(msg, state) && !seenTools.has(msg.id)) {
       seenTools.add(msg.id);
-      const stage = stageFor(msg, reasoningStageTitle(msg, state) || title, false);
       const search = standaloneWebSearchDetails(msg, state);
       let label = `web.run · ${directWebRunOperation(msg)}`;
       const bits: string[] = [];
       if (search.queries.length > 0) bits.push(`${search.queries.length} 个查询`);
       if (search.results.length > 0) bits.push(`${search.results.length} 个结果`);
       if (bits.length > 0) label += ` · ${bits.join(" / ")}`;
+      const stage = stageFor(msg, reasoningStageTitle(msg, state) || title || label, false);
       stage.items.push({
         kind: "tool",
         text: label,
@@ -1258,7 +1399,7 @@ function reasoningStages(
       (msg.channel === "commentary" || msg.metadata.is_thinking_preamble_message === true) &&
       msg.text
     ) {
-      const stage = stageFor(msg, reasoningStageTitle(msg, state), false);
+      const stage = stageFor(msg, reasoningStageTitle(msg, state) || "进度", false);
       stage.items.push({
         kind: "commentary",
         text: msg.text,
@@ -1271,14 +1412,16 @@ function reasoningStages(
       (msg.contentType === "reasoning_recap" || msg.contentType === "thoughts") &&
       msg.reasoningSummary
     ) {
+      if (msg.contentType === "thoughts" && transitions.length > 0) continue;
       let summaryStage: AiReasoningStage | undefined;
       for (const summary of msg.reasoningSummary
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean)) {
+        if (isPlaceholderReasoningSummary(summary)) continue;
         const isDurationOnly = /^思考了\s+(?:\d+(?:\.\d+)?[hms]\s*)+$/i.test(summary);
         if (isDurationOnly) continue;
-        const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
+        const stage = stageFor(msg, reasoningStageTitle(msg, state) || summary, true);
         summaryStage = stage;
         stage.items.push({
           kind: "summary" as const,
@@ -1480,6 +1623,7 @@ export function createChatgptWebMergeState(): ChatgptWebMergeState {
     lastOp: "",
     endMeta: {},
     chunkCount: 0,
+    reasoningTransitions: [],
   };
 }
 

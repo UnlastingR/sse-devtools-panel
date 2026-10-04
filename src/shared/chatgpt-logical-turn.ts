@@ -1,4 +1,4 @@
-import { isChatgptConversationUrl } from "./ai-profile";
+import { detectAiProfile, isChatgptConversationUrl, type AiProfile } from "./ai-profile";
 import type { SseEvent, StreamRecord } from "./types";
 
 type JsonRecord = Record<string, unknown>;
@@ -6,6 +6,7 @@ type JsonRecord = Record<string, unknown>;
 export interface ChatgptTurnIdentity {
   conversationId: string;
   workingTurnId: string;
+  turnExchangeId?: string;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -28,16 +29,13 @@ function messageMetadata(value: unknown): JsonRecord | null {
   return isRecord(value.metadata) ? value.metadata : null;
 }
 
-/**
- * Extract the stable logical-turn key used by ChatGPT Web across connector
- * approval/denial continuations. `turn_exchange_id` may change when the UI
- * resumes after an interaction, while `working_turn_id` stays stable.
- */
+/** Extract the identifiers ChatGPT exposes for one browser-visible turn generation. */
 export function chatgptTurnIdentity(
   events: ReadonlyArray<Pick<SseEvent, "data" | "event">>,
 ): ChatgptTurnIdentity | null {
   let conversationId = "";
   let workingTurnId = "";
+  let turnExchangeId = "";
 
   for (const ev of events) {
     const parsed = parseJson(ev.data);
@@ -46,29 +44,60 @@ export function chatgptTurnIdentity(
       conversationId = parsed.conversation_id;
     }
 
-    if (!workingTurnId && parsed.type === "input_message" && isRecord(parsed.input_message)) {
+    if (
+      (!workingTurnId || !turnExchangeId) &&
+      parsed.type === "input_message" &&
+      isRecord(parsed.input_message)
+    ) {
       const metadata = messageMetadata(parsed.input_message);
       if (metadata && typeof metadata.working_turn_id === "string") {
         workingTurnId = metadata.working_turn_id;
       }
+      if (!turnExchangeId && metadata && typeof metadata.turn_exchange_id === "string") {
+        turnExchangeId = metadata.turn_exchange_id;
+      }
     }
 
-    if (!workingTurnId && isRecord(parsed.v) && isRecord(parsed.v.message)) {
+    if ((!workingTurnId || !turnExchangeId) && isRecord(parsed.v) && isRecord(parsed.v.message)) {
       const metadata = messageMetadata(parsed.v.message);
       if (metadata && typeof metadata.working_turn_id === "string") {
         workingTurnId = metadata.working_turn_id;
       }
+      if (!turnExchangeId && metadata && typeof metadata.turn_exchange_id === "string") {
+        turnExchangeId = metadata.turn_exchange_id;
+      }
     }
 
-    if (conversationId && workingTurnId) return { conversationId, workingTurnId };
+    if (conversationId && workingTurnId && turnExchangeId) {
+      return { conversationId, workingTurnId, turnExchangeId };
+    }
   }
-  return null;
+  return conversationId && workingTurnId
+    ? { conversationId, workingTurnId, ...(turnExchangeId ? { turnExchangeId } : {}) }
+    : null;
+}
+
+function chatgptProfile(record: StreamRecord): AiProfile {
+  return detectAiProfile(record.events, record.url).profile;
 }
 
 export function chatgptTurnKey(record: StreamRecord): string | null {
   if (!isChatgptConversationUrl(record.url)) return null;
   const identity = chatgptTurnIdentity(record.events);
-  return identity ? `${identity.conversationId}:${identity.workingTurnId}` : null;
+  if (!identity) return null;
+  const profile = chatgptProfile(record);
+  if (profile === "chatgpt-web-work") {
+    // Work permission/connector continuations deliberately start a new
+    // turn_exchange_id while preserving working_turn_id. Treat that as a new
+    // stream generation so a completed WS topic cannot keep absorbing a later
+    // fetch/SSE continuation and replay stale mutable state into it.
+    const generation = identity.turnExchangeId ?? identity.workingTurnId;
+    return `work:${identity.conversationId}:${generation}`;
+  }
+  if (profile === "chatgpt-web-chat") {
+    return `chat:${identity.conversationId}:${identity.workingTurnId}`;
+  }
+  return null;
 }
 
 /**

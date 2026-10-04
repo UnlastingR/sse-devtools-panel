@@ -40,11 +40,19 @@ function record(
 }
 
 describe("ChatGPT logical turn grouping", () => {
-  it("uses working_turn_id across a connector deny continuation", () => {
+  it("keeps Work approval continuations in separate turn generations", () => {
     const first = event({
       type: "input_message",
       conversation_id: "conv",
-      input_message: { metadata: { turn_exchange_id: "turn-a", working_turn_id: "work" } },
+      input_message: {
+        metadata: {
+          turn_exchange_id: "turn-a",
+          working_turn_id: "work",
+          is_temporal_turn: true,
+          stream_topic_id: "conversation-turn-work",
+          async_source: "server:conversation-turn-work:US",
+        },
+      },
     });
     const second = event({
       type: "input_message",
@@ -54,22 +62,34 @@ describe("ChatGPT logical turn grouping", () => {
         metadata: {
           turn_exchange_id: "turn-b",
           working_turn_id: "work",
+          is_temporal_turn: true,
+          stream_topic_id: "conversation-turn-work",
+          async_source: "server:conversation-turn-work:US",
           jit_plugin_data: { from_client: { type: "deny" } },
         },
       },
     });
 
-    expect(chatgptTurnIdentity([first])).toEqual({ conversationId: "conv", workingTurnId: "work" });
+    expect(chatgptTurnIdentity([first])).toEqual({
+      conversationId: "conv",
+      workingTurnId: "work",
+      turnExchangeId: "turn-a",
+    });
     expect(chatgptTurnIdentity([second])).toEqual({
       conversationId: "conv",
       workingTurnId: "work",
+      turnExchangeId: "turn-b",
     });
 
-    const a = record("a", 1, [first]);
+    const a = record("a", 1, [first], {
+      url: "wss://ws.chatgpt.com/p21/ws/user/user-example#conversation-turn-work",
+      transport: "websocket",
+    });
     const b = record("b", 2, [second]);
+    expect(chatgptTurnKey(a)).toBe("work:conv:turn-a");
+    expect(chatgptTurnKey(b)).toBe("work:conv:turn-b");
     const merged = combineChatgptTurnRecords(b, [a, b]);
-    expect(merged.requestId).toBe("chatgpt-turn:conv:work");
-    expect(merged.events).toEqual([first, second]);
+    expect(merged).toBe(b);
   });
 
   it("merges an interrupted conversation into a successful resume stream", () => {
@@ -99,7 +119,7 @@ describe("ChatGPT logical turn grouping", () => {
     });
 
     const merged = combineChatgptTurnRecords(resume, [interrupted, resume]);
-    expect(merged.requestId).toBe("chatgpt-turn:conv:work");
+    expect(merged.requestId).toBe("chatgpt-turn:chat:conv:work");
     expect(merged.streamStatus).toBe("done");
     expect(merged.errorMessage).toBeUndefined();
     expect(merged.events).toEqual([first, resumed]);
@@ -107,7 +127,17 @@ describe("ChatGPT logical turn grouping", () => {
 
   it("recognizes ChatGPT Work WebSocket turn streams", () => {
     const wsEvent = event({
-      v: { message: { metadata: { working_turn_id: "work" } } },
+      v: {
+        message: {
+          metadata: {
+            working_turn_id: "work",
+            turn_exchange_id: "turn-a",
+            is_temporal_turn: true,
+            stream_topic_id: "conversation-turn-work",
+            async_source: "server:conversation-turn-work:US",
+          },
+        },
+      },
       conversation_id: "conv",
     });
     const ws = record("ws", 1, [wsEvent], {
@@ -115,12 +145,13 @@ describe("ChatGPT logical turn grouping", () => {
       transport: "websocket",
     });
 
-    expect(chatgptTurnKey(ws)).toBe("conv:work");
+    expect(chatgptTurnKey(ws)).toBe("work:conv:turn-a");
     const merged = combineChatgptTurnRecords(ws, [ws]);
     expect(merged).toBe(ws);
     expect(chatgptTurnIdentity(ws.events)).toEqual({
       conversationId: "conv",
       workingTurnId: "work",
+      turnExchangeId: "turn-a",
     });
   });
 });

@@ -218,6 +218,11 @@ function setVirtualText(pane: VirtualTextPane, nextText: string, showingEmpty: b
 
   pane.text = nextText;
   pane.rows = wrapTextToRows(nextText, pane.cols);
+  const maxLogicalScroll = Math.max(
+    0,
+    pane.rows.length * CONV_ROW_HEIGHT_PX - pane.root.clientHeight,
+  );
+  if (pane.root.scrollTop > maxLogicalScroll) pane.root.scrollTop = maxLogicalScroll;
   pane.paintedStart = -1;
   paintVirtualWindow(pane, true);
   lastRenderedChannelText = nextText;
@@ -475,7 +480,7 @@ function createReasoningPane(
 
 function toolDisplayName(tc: AiConversation["channels"]["tools"][number]): string {
   const provider = tc.provider || tc.name || t("conversationToolsFunction");
-  if (tc.kind === "search") return `${provider} · SEARCH`;
+  if (tc.kind === "search") return `${provider} · ${tc.operation || "SEARCH"}`;
   if (tc.kind === "builtin") return `${provider} · BUILTIN`;
   if (tc.kind === "widget") {
     return `${provider} · WIDGET${tc.widgetCategory ? ` · ${tc.widgetCategory.toUpperCase()}` : ""}`;
@@ -487,6 +492,7 @@ function toolDisplayName(tc: AiConversation["channels"]["tools"][number]): strin
 }
 
 function toolDisplayOperation(tc: AiConversation["channels"]["tools"][number]): string {
+  if (tc.kind === "search") return "";
   if (tc.operation) return tc.operation;
   if (tc.kind) return "";
   return tc.name || "";
