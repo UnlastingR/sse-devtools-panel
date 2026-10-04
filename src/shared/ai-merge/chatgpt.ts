@@ -1428,7 +1428,7 @@ function reasoningStages(
         if (isPlaceholderReasoningSummary(summary)) continue;
         const isDurationOnly = /^思考了\s+(?:\d+(?:\.\d+)?[hms]\s*)+$/i.test(summary);
         if (isDurationOnly) continue;
-        const stage = stageFor(msg, reasoningStageTitle(msg, state) || summary, true);
+        const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
         summaryStage = stage;
         stage.items.push({
           kind: "summary" as const,
