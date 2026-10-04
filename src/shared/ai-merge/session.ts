@@ -134,8 +134,9 @@ function snapshotVendor(
     case "openai-compatible":
       return snapshotOpenAiCompatible(vendor.state);
     case "chatgpt-web-chat":
-    case "chatgpt-web-work":
       return snapshotChatgptWeb(vendor.state, observation);
+    case "chatgpt-web-work":
+      return snapshotChatgptWeb(vendor.state, observation, { workReasoningHierarchy: true });
     case "deepseek-web":
       return snapshotDeepseekWeb(vendor.state);
     case "doubao-web":

@@ -311,6 +311,16 @@
   font-size: var(--text-xs);
 }
 
+.reasoning-stage-item-activity {
+  padding-left: 34px;
+  background: transparent;
+}
+
+.reasoning-stage-item-activity .reasoning-stage-item-text {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
 .reasoning-tool-jump {
   width: fit-content;
   max-width: 100%;
@@ -619,4 +629,9 @@
   word-break: break-word;
   max-height: 220px;
   overflow: auto;
+}
+
+.tool-args-pre.is-missing {
+  color: var(--text-muted);
+  font-style: italic;
 }

@@ -126,6 +126,15 @@ function disposeVirtualTextPane(): void {
   activeVirtualPane = null;
 }
 
+function replaceConversationPane(shell: HTMLElement, next: HTMLElement): void {
+  const panes = Array.from(shell.querySelectorAll<HTMLElement>(".conversation-pane"));
+  const prev = panes[0];
+  if (activeVirtualPane && panes.includes(activeVirtualPane.root)) disposeVirtualTextPane();
+  if (prev) prev.replaceWith(next);
+  else shell.appendChild(next);
+  for (const extra of panes.slice(1)) extra.remove();
+}
+
 function onVirtualScroll(): void {
   if (!activeVirtualPane) return;
   const pinnedScrollTop = activeVirtualPane.root.scrollTop;
@@ -257,6 +266,7 @@ function buildConversationFingerprint(
     merged.channels.reasoning.length,
     merged.channels.tools.length,
     merged.channels.tools.reduce((n, tc) => n + tc.arguments.length, 0),
+    merged.channels.tools.map((tc) => tc.argumentsSource ?? "").join(","),
     merged.channels.reasoningDurationSec ?? "",
     merged.channels.reasoningDurationKind ?? "",
     merged.endMeta.finishReason ?? "",
@@ -270,7 +280,7 @@ function toolsFingerprint(merged: AiConversation): string {
   return merged.channels.tools
     .map(
       (tc) =>
-        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.kind ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.presentation ?? ""}:${tc.uiResource ?? ""}:${tc.widgetCategory ?? ""}:${tc.widgetType ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
+        `${tc.index}:${tc.name ?? ""}:${tc.provider ?? ""}:${tc.kind ?? ""}:${tc.source ?? ""}:${tc.operation ?? ""}:${tc.presentation ?? ""}:${tc.uiResource ?? ""}:${tc.widgetCategory ?? ""}:${tc.widgetType ?? ""}:${tc.argumentsSource ?? ""}:${tc.arguments.length}:${tc.id ?? ""}`,
     )
     .join("|");
 }
@@ -379,10 +389,12 @@ function createReasoningPane(
 
     const counts = document.createElement("span");
     counts.className = "reasoning-stage-counts";
+    const activityCount = stage.items.filter((item) => item.kind === "activity").length;
     const commentaryCount = stage.items.filter((item) => item.kind === "commentary").length;
     const toolCount = stage.items.filter((item) => item.kind === "tool").length;
     const summaryCount = stage.items.filter((item) => item.kind === "summary").length;
     const countBits: string[] = [];
+    if (activityCount) countBits.push(`${t("conversationReasoningActivity")} ${activityCount}`);
     if (commentaryCount)
       countBits.push(`${t("conversationReasoningCommentary")} ${commentaryCount}`);
     if (toolCount) countBits.push(`${t("conversationReasoningTool")} ${toolCount}`);
@@ -395,9 +407,10 @@ function createReasoningPane(
     body.hidden = !isOpen;
 
     const groups: Array<{
-      kind: "commentary" | "tool" | "summary";
+      kind: "activity" | "commentary" | "tool" | "summary";
       label: string;
     }> = [
+      { kind: "activity", label: t("conversationReasoningActivity") },
       { kind: "commentary", label: t("conversationReasoningCommentary") },
       { kind: "tool", label: t("conversationReasoningTool") },
       { kind: "summary", label: t("conversationReasoningSummary") },
@@ -544,7 +557,11 @@ function conversationChannelText(merged: AiConversation, channel: ConversationCh
               const display = toolDisplayName(tc);
               const operation = toolDisplayOperation(tc);
               const head = `#${tc.index}${display ? ` ${display}` : ""}${operation && operation !== display ? ` · ${operation}` : ""}${tc.id ? ` (${tc.id})` : ""}`;
-              return `${head}\n${tc.arguments || "{}"}`;
+              return `${head}\n${
+                tc.argumentsSource === "missing"
+                  ? t("conversationToolsArgsMissing")
+                  : tc.arguments || "{}"
+              }`;
             })
             .join("\n\n")
         : "";
@@ -626,7 +643,7 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
     const isOpen = expanded.has(index);
     card.className = "tool-card" + (isOpen ? " is-expanded" : " is-collapsed");
     card.dataset.toolIndex = String(index);
-    const parsed = tryParseToolArgs(tc.arguments);
+    const parsed = tc.argumentsSource === "missing" ? null : tryParseToolArgs(tc.arguments);
     const isSearch = tc.kind === "search" || tc.name === "web_search" || isWebSearchPayload(parsed);
 
     const head = document.createElement("button");
@@ -789,7 +806,10 @@ export function createToolsPane(merged: AiConversation, streamId: string): HTMLE
       argsLabel.textContent = t("conversationToolsArgs");
       const argsPre = document.createElement("pre");
       argsPre.className = "tool-args-pre";
-      if (parsed != null) {
+      if (tc.argumentsSource === "missing") {
+        argsPre.textContent = t("conversationToolsArgsMissing");
+        argsPre.classList.add("is-missing");
+      } else if (parsed != null) {
         try {
           argsPre.textContent = JSON.stringify(parsed, null, 2);
         } catch {
@@ -1050,8 +1070,7 @@ export function renderConversation(
           ? isNearBottom(prev.scrollTop, prev.scrollHeight, prev.clientHeight)
           : false;
         const next = createToolsPane(merged, record.requestId);
-        if (prev) prev.replaceWith(next);
-        else existingShell.appendChild(next);
+        replaceConversationPane(existingShell, next);
         settleStructuredPaneScroll(next, scrollTop, keepBottom);
         lastToolsFingerprint = tf;
       }
@@ -1060,14 +1079,16 @@ export function renderConversation(
     if (conversationChannel === "reasoning" && merged.channels.reasoningStages?.length) {
       const rf = reasoningFingerprint(merged);
       if (rf !== lastReasoningFingerprint) {
-        const prev = existingShell.querySelector<HTMLElement>(".conversation-reasoning-pane");
+        // Reasoning can start as a virtual text pane before structured DIL
+        // stages arrive. When it upgrades to the structured pane, replace the
+        // existing pane instead of appending a second flex:1 pane.
+        const prev = existingShell.querySelector<HTMLElement>(".conversation-pane");
         const scrollTop = prev?.scrollTop ?? 0;
         const keepBottom = prev
           ? isNearBottom(prev.scrollTop, prev.scrollHeight, prev.clientHeight)
           : false;
         const next = createReasoningPane(merged, record, options);
-        if (prev) prev.replaceWith(next);
-        else existingShell.appendChild(next);
+        replaceConversationPane(existingShell, next);
         settleStructuredPaneScroll(next, scrollTop, keepBottom);
         lastReasoningFingerprint = rf;
       }

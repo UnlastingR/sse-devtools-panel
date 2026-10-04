@@ -23,10 +23,12 @@ export interface AiToolCall {
   /** More specific widget implementation identifier when exposed by the stream. */
   widgetType?: string;
   arguments: string;
+  /** Whether arguments were actually present in/derived from the captured stream. */
+  argumentsSource?: "stream" | "derived" | "missing";
 }
 
 export interface AiReasoningItem {
-  kind: "commentary" | "tool" | "summary";
+  kind: "activity" | "commentary" | "tool" | "summary";
   text: string;
   elapsedSec?: number;
   /** Independent duration for this item. Tool durations are measured when possible. */

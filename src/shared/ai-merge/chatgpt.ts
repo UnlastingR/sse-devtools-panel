@@ -35,6 +35,13 @@ type ReasoningTransition = {
   observedAt?: number;
 };
 
+type WorkReasoningTransition = {
+  messageId: string;
+  kind: "title" | "status";
+  text: string;
+  observedAt?: number;
+};
+
 type DilToolEvent = {
   messageId: string;
   id: string;
@@ -77,6 +84,7 @@ export type ChatgptWebMergeState = {
   endMeta: AiEndMeta;
   chunkCount: number;
   reasoningTransitions: ReasoningTransition[];
+  workReasoningTransitions: WorkReasoningTransition[];
   dilToolEvents: DilToolEvent[];
 };
 
@@ -200,6 +208,21 @@ function recordReasoningTransition(
   state.reasoningTransitions.push({ messageId, text, observedAt });
 }
 
+function recordWorkReasoningTransition(
+  state: ChatgptWebMergeState,
+  messageId: string,
+  kind: WorkReasoningTransition["kind"],
+  value: unknown,
+  receivedAtMs?: number,
+): void {
+  const text = cleanReasoningStatus(value);
+  if (!text) return;
+  const observedAt = observedSeconds(receivedAtMs);
+  const last = state.workReasoningTransitions.at(-1);
+  if (last?.messageId === messageId && last.kind === kind && last.text === text) return;
+  state.workReasoningTransitions.push({ messageId, kind, text, observedAt });
+}
+
 function messageText(content: unknown): {
   contentType?: string;
   text: string;
@@ -293,6 +316,14 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState, receivedAtMs?:
   state.lastOp = "";
 
   applyChatgptMetadataToEndMeta(msg.metadata, state);
+  if (!existing) {
+    const dil = isRecord(msg.metadata.dil_v2_reasoning) ? msg.metadata.dil_v2_reasoning : null;
+    const appData = dil && isRecord(dil.appData) ? dil.appData : null;
+    if (appData) {
+      recordWorkReasoningTransition(state, msg.id, "title", appData.title, receivedAtMs);
+      recordWorkReasoningTransition(state, msg.id, "status", appData.current_status, receivedAtMs);
+    }
+  }
 }
 
 function currentMessage(state: ChatgptWebMergeState): ChatgptMessage | undefined {
@@ -460,6 +491,13 @@ function applyMessagePatch(
       path === "/message/metadata/dil_v2_reasoning/appData/title"
     ) {
       recordReasoningTransition(state, msg.id, value, receivedAtMs);
+      recordWorkReasoningTransition(
+        state,
+        msg.id,
+        path.endsWith("/current_status") ? "status" : "title",
+        value,
+        receivedAtMs,
+      );
     }
     if (path === "/message/metadata/thinking_effort" && typeof value === "string") {
       state.endMeta.thinkingEffort = value;
@@ -726,8 +764,13 @@ function resourceOperation(resourceUri: string): string | undefined {
   return last ? decodeURIComponent(last) : undefined;
 }
 
+function isInternalConnectorId(value: string | undefined): boolean {
+  return Boolean(value && /^(?:asdk_app_|connector_)[A-Za-z0-9_-]+$/i.test(value));
+}
+
 function connectorPathIdentity(text: string): {
   provider?: string;
+  connectorId?: string;
   operation?: string;
 } {
   if (!text) return {};
@@ -736,13 +779,60 @@ function connectorPathIdentity(text: string): {
     if (!isRecord(parsed) || typeof parsed.path !== "string") return {};
     const parts = parsed.path.split("/").filter(Boolean);
     if (parts.length < 2) return {};
-    const provider = parts[0]?.trim() || undefined;
+    const first = parts[0]?.trim() || undefined;
+    const connectorId = isInternalConnectorId(first) ? first : undefined;
+    const provider = connectorId ? undefined : first;
     const rawOperation = parts.at(-1)?.trim() || undefined;
     const operation = rawOperation ? normalizeToolOperation(rawOperation) : undefined;
-    return { provider, operation };
+    return { provider, connectorId, operation };
   } catch {
     return {};
   }
+}
+
+function connectorDisplayName(
+  state: ChatgptWebMergeState,
+  connectorId: string,
+): string | undefined {
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg) continue;
+
+    const jit = isRecord(msg.metadata.jit_plugin_data) ? msg.metadata.jit_plugin_data : null;
+    const fromServer = jit && isRecord(jit.from_server) ? jit.from_server : null;
+    const body = fromServer && isRecord(fromServer.body) ? fromServer.body : null;
+    if (body?.connector_id === connectorId) {
+      const name = body.connector_name;
+      if (typeof name === "string" && name.trim()) return name.trim();
+    }
+
+    const resource = isRecord(msg.metadata.invoked_resource) ? msg.metadata.invoked_resource : null;
+    const uri = resource && typeof resource.resource_uri === "string" ? resource.resource_uri : "";
+    if (uri.split("/").filter(Boolean)[0] === connectorId) {
+      const name = resource?.app_name;
+      if (typeof name === "string" && name.trim()) return name.trim();
+    }
+
+    const sdk = isRecord(msg.metadata.chatgpt_sdk) ? msg.metadata.chatgpt_sdk : null;
+    if (sdk?.attribution_id === connectorId) {
+      const resourceName = typeof sdk.resource_name === "string" ? sdk.resource_name.trim() : "";
+      const actionName = typeof sdk.action_name === "string" ? sdk.action_name.trim() : "";
+      if (resourceName && actionName) {
+        const suffix = `_${actionName}`;
+        if (resourceName.toLowerCase().endsWith(suffix.toLowerCase())) {
+          const appName = resourceName.slice(0, -suffix.length).trim();
+          if (appName) return appName;
+        }
+      }
+    }
+  }
+
+  for (const event of state.dilToolEvents) {
+    if (event.connectorId !== connectorId || !event.toolName) continue;
+    const namespace = event.toolName.split(".")[0]?.trim();
+    if (namespace) return `${namespace[0]!.toUpperCase()}${namespace.slice(1)}`;
+  }
+  return undefined;
 }
 
 function builtinProvider(provider: string | undefined): boolean {
@@ -1073,12 +1163,20 @@ function toolIdentity(
   for (const msg of candidates) {
     if (msg.role === "assistant" && msg.recipient === "api_tool.call_tool") {
       const path = connectorPathIdentity(msg.text);
-      if (path.provider || path.operation) {
-        const kind: AiToolCall["kind"] = builtinProvider(path.provider) ? "builtin" : "app";
+      if (path.provider || path.connectorId || path.operation) {
+        const resolvedProvider =
+          path.provider ??
+          (path.connectorId ? connectorDisplayName(state, path.connectorId) : undefined);
+        const kind: AiToolCall["kind"] = builtinProvider(resolvedProvider) ? "builtin" : "app";
         return {
-          provider: path.provider,
+          provider: resolvedProvider ?? (path.connectorId ? "App" : undefined),
           kind,
-          source: kind === "app" && knownMcpProvider(state, path.provider) ? "mcp" : undefined,
+          source:
+            kind === "app" &&
+            (Boolean(path.connectorId?.startsWith("asdk_app_")) ||
+              knownMcpProvider(state, resolvedProvider))
+              ? "mcp"
+              : undefined,
           operation: path.operation,
         };
       }
@@ -1457,9 +1555,31 @@ function reasoningStageTitle(msg: ChatgptMessage, state: ChatgptWebMergeState): 
   return "";
 }
 
+function canonicalReasoningTool(
+  tools: ReadonlyArray<AiToolCall>,
+  id: string | undefined,
+): AiToolCall | undefined {
+  if (!id) return undefined;
+  return tools.find((tool) => tool.id === id || tool.aliases?.includes(id));
+}
+
+function reasoningToolKey(tool: AiToolCall | undefined, fallbackId: string): string {
+  return tool ? `tool:${tool.index}` : `raw:${fallbackId}`;
+}
+
+function reasoningToolLabel(tool: AiToolCall): string {
+  const provider = tool.provider ?? tool.name ?? "tool";
+  const kind = tool.kind ? ` · ${tool.kind.toUpperCase()}` : "";
+  const source = tool.source ? ` · ${tool.source.toUpperCase()}` : "";
+  const presentation = tool.presentation === "app_ui" ? " · UI" : "";
+  const operation = tool.operation ? ` · ${tool.operation}` : "";
+  return `${provider}${kind}${source}${presentation}${operation}`;
+}
+
 function reasoningStages(
   state: ChatgptWebMergeState,
   observation?: AiMergeObservation,
+  tools: ReadonlyArray<AiToolCall> = [],
 ): AiReasoningStage[] {
   const stages: AiReasoningStage[] = [];
   const transitionStageIds = new Set<string>();
@@ -1518,6 +1638,10 @@ function reasoningStages(
     });
 
     for (const toolEvent of state.dilToolEvents.filter((item) => item.messageId === msg.id)) {
+      const canonical = canonicalReasoningTool(tools, toolEvent.id);
+      const dedupeKey = reasoningToolKey(canonical, toolEvent.id);
+      if (seenTools.has(dedupeKey)) continue;
+      seenTools.add(dedupeKey);
       const elapsedSec =
         start != null && toolEvent.observedAt != null
           ? Math.max(0, toolEvent.observedAt - start)
@@ -1525,10 +1649,10 @@ function reasoningStages(
       const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
       stage.items.push({
         kind: "tool",
-        text: dilToolLabel(toolEvent),
+        text: canonical ? reasoningToolLabel(canonical) : dilToolLabel(toolEvent),
         elapsedSec,
         sourceMessageId: msg.id,
-        toolId: toolEvent.id,
+        toolId: canonical?.id ?? toolEvent.id,
       });
     }
 
@@ -1557,14 +1681,16 @@ function reasoningStages(
         !identity.operation &&
         (!args || args === "{}");
       if (isEmptyHiddenWrapper) continue;
-      if (!seenTools.has(msg.id)) {
-        seenTools.add(msg.id);
+      const canonical = canonicalReasoningTool(tools, msg.id);
+      const dedupeKey = reasoningToolKey(canonical, msg.id);
+      if (!seenTools.has(dedupeKey)) {
+        seenTools.add(dedupeKey);
         const inheritedTitle = logicalToolStageTitle(msg, state) || title;
         const toolTitle =
           inheritedTitle ||
           (!current || current.title === "进度" ? toolContextLabel(msg, state) : "");
         const stage = stageFor(msg, toolTitle, false);
-        let label = toolContextLabel(msg, state);
+        let label = canonical ? reasoningToolLabel(canonical) : toolContextLabel(msg, state);
         if (msg.recipient === "web.run") {
           const search = searchDetailsForTool(msg, state);
           const bits: string[] = [];
@@ -1580,14 +1706,17 @@ function reasoningStages(
           durationSec: measuredDuration,
           durationKind: measuredDuration == null ? undefined : "measured",
           sourceMessageId: msg.id,
-          toolId: msg.id,
+          toolId: canonical?.id ?? msg.id,
         });
       }
       continue;
     }
 
-    if (isStandaloneWebToolResult(msg, state) && !seenTools.has(msg.id)) {
-      seenTools.add(msg.id);
+    if (isStandaloneWebToolResult(msg, state)) {
+      const canonical = canonicalReasoningTool(tools, msg.id);
+      const dedupeKey = reasoningToolKey(canonical, msg.id);
+      if (seenTools.has(dedupeKey)) continue;
+      seenTools.add(dedupeKey);
       const search = standaloneWebSearchDetails(msg, state);
       let label = `web.run · ${directWebRunOperation(msg)}`;
       const bits: string[] = [];
@@ -1605,7 +1734,7 @@ function reasoningStages(
         text: label,
         elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
         sourceMessageId: msg.id,
-        toolId: msg.id,
+        toolId: canonical?.id ?? msg.id,
       });
       continue;
     }
@@ -1614,12 +1743,16 @@ function reasoningStages(
     if (widgets.length > 0) {
       const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
       for (const widget of widgets) {
+        const canonical = canonicalReasoningTool(tools, widget.id);
+        const dedupeKey = reasoningToolKey(canonical, widget.id);
+        if (seenTools.has(dedupeKey)) continue;
+        seenTools.add(dedupeKey);
         stage.items.push({
           kind: "tool",
-          text: clientWidgetLabel(widget),
+          text: canonical ? reasoningToolLabel(canonical) : clientWidgetLabel(widget),
           elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
           sourceMessageId: msg.id,
-          toolId: widget.id,
+          toolId: canonical?.id ?? widget.id,
         });
       }
     }
@@ -1733,6 +1866,125 @@ function reasoningStages(
   return visibleStages;
 }
 
+function workReasoningStages(
+  state: ChatgptWebMergeState,
+  flatStages: AiReasoningStage[],
+  observation?: AiMergeObservation,
+): AiReasoningStage[] {
+  const titleTransitions = state.workReasoningTransitions.filter((item) => item.kind === "title");
+  if (titleTransitions.length === 0) return flatStages;
+
+  const start = reasoningStartTime(state);
+  const elapsedFor = (transition: WorkReasoningTransition): number | undefined => {
+    if (start != null && transition.observedAt != null) {
+      return Math.max(0, transition.observedAt - start);
+    }
+    const msg = state.messages.get(transition.messageId);
+    return msg ? reasoningElapsedSecWithFallback(msg, state, start) : undefined;
+  };
+
+  const phases: Array<{
+    stage: AiReasoningStage;
+    titleElapsed?: number;
+  }> = [];
+  let pendingStatuses: WorkReasoningTransition[] = [];
+  let phaseIndex = 0;
+
+  const appendActivities = (
+    stage: AiReasoningStage,
+    statuses: WorkReasoningTransition[],
+    title: string,
+  ): void => {
+    for (const status of statuses) {
+      if (status.text === title) continue;
+      stage.items.push({
+        kind: "activity",
+        text: status.text,
+        elapsedSec: elapsedFor(status),
+        sourceMessageId: status.messageId,
+      });
+    }
+  };
+
+  for (const transition of state.workReasoningTransitions) {
+    if (transition.kind === "status") {
+      pendingStatuses.push(transition);
+      continue;
+    }
+
+    const titleElapsed = elapsedFor(transition);
+    const firstStatusElapsed = pendingStatuses
+      .map(elapsedFor)
+      .find((value): value is number => value != null);
+    const stage: AiReasoningStage = {
+      id: `work-phase:${transition.messageId}:${phaseIndex}`,
+      title: transition.text,
+      elapsedSec: firstStatusElapsed ?? titleElapsed,
+      items: [],
+    };
+    appendActivities(stage, pendingStatuses, transition.text);
+    phases.push({ stage, titleElapsed });
+    phaseIndex += 1;
+    pendingStatuses = [];
+  }
+
+  if (phases.length === 0) return flatStages;
+
+  // While a Work turn is still streaming, current_status can arrive before
+  // its eventual title. Keep those live activities visible under the latest
+  // known phase; once the next title arrives, the next snapshot reparents them
+  // into that new phase.
+  if (pendingStatuses.length > 0) {
+    appendActivities(phases.at(-1)!.stage, pendingStatuses, "");
+  }
+
+  const phaseStarts = phases.map((phase) => phase.stage.elapsedSec);
+  const flattenedItems = flatStages.flatMap((stage) => stage.items);
+  for (const item of flattenedItems) {
+    let targetIndex = phases.length - 1;
+    if (item.elapsedSec != null) {
+      targetIndex = 0;
+      for (let index = 0; index < phases.length; index += 1) {
+        const phaseStart = phaseStarts[index];
+        if (phaseStart == null || phaseStart <= item.elapsedSec) targetIndex = index;
+        else break;
+      }
+    }
+    phases[targetIndex]!.stage.items.push(item);
+  }
+
+  for (const { stage, titleElapsed } of phases) {
+    const activities = stage.items
+      .filter((item) => item.kind === "activity" && item.elapsedSec != null)
+      .sort((a, b) => (a.elapsedSec ?? 0) - (b.elapsedSec ?? 0));
+    for (let index = 0; index < activities.length; index += 1) {
+      const item = activities[index]!;
+      const next = activities[index + 1]?.elapsedSec;
+      const boundary = next ?? titleElapsed;
+      if (boundary == null || item.elapsedSec == null || boundary < item.elapsedSec) continue;
+      item.durationSec = Math.max(0, boundary - item.elapsedSec);
+      item.durationKind = "inferred";
+    }
+    stage.items.sort((a, b) => {
+      const aTime = a.elapsedSec ?? Number.MAX_SAFE_INTEGER;
+      const bTime = b.elapsedSec ?? Number.MAX_SAFE_INTEGER;
+      return aTime - bTime;
+    });
+  }
+
+  const reasoningEnd = reasoningEndElapsedSec(state, start, observation);
+  phases.forEach(({ stage }, index) => {
+    if (stage.elapsedSec == null) return;
+    const nextStart = phases[index + 1]?.stage.elapsedSec;
+    const end = nextStart ?? reasoningEnd;
+    if (end == null || end < stage.elapsedSec) return;
+    stage.durationSec = Math.max(0, end - stage.elapsedSec);
+    stage.durationKind = "inferred";
+  });
+
+  return phases.map((phase) => phase.stage);
+}
+
 function visibleReasoningText(
   stages: AiReasoningStage[],
   duration?: number,
@@ -1744,7 +1996,14 @@ function visibleReasoningText(
     const stageDuration = stage.durationSec == null ? "" : ` · ≈${stage.durationSec.toFixed(1)}s`;
     out.push(`${reasoningTimePrefix(stage.elapsedSec)}阶段 · ${stageTitle}${stageDuration}`);
     for (const item of stage.items) {
-      const prefix = item.kind === "commentary" ? "说明" : item.kind === "tool" ? "工具" : "摘要";
+      const prefix =
+        item.kind === "activity"
+          ? "活动"
+          : item.kind === "commentary"
+            ? "说明"
+            : item.kind === "tool"
+              ? "工具"
+              : "摘要";
       const itemDuration =
         item.durationSec == null
           ? ""
@@ -1777,6 +2036,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
         provider: "web.run",
         kind: "search",
         operation,
+        argumentsSource: "derived",
         arguments: JSON.stringify({
           type: operation,
           queries: search.queries,
@@ -1833,6 +2093,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
             name: msg.recipient,
             ...identity,
             ...toolUiDetails(msg, state),
+            argumentsSource: "stream",
             arguments: args || "{}",
           });
         }
@@ -1849,6 +2110,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
         presentation: "client_widget",
         widgetCategory: widget.category,
         widgetType: widget.widgetType,
+        argumentsSource: "derived",
         arguments: widget.arguments,
       });
     }
@@ -1883,6 +2145,8 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
         kind: existing.kind ?? "app",
         source: existing.source ?? jit.source,
         operation: existing.operation ?? jit.operation,
+        argumentsSource:
+          existing.arguments && existing.arguments !== "{}" ? existing.argumentsSource : "stream",
         arguments:
           existing.arguments && existing.arguments !== "{}" ? existing.arguments : jit.arguments,
       };
@@ -1898,6 +2162,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
       kind: "app",
       source: jit.source,
       operation: jit.operation,
+      argumentsSource: "stream",
       arguments: jit.arguments,
     });
     enriched.add(matchIndex);
@@ -1933,6 +2198,7 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
       id: event.id,
       name: event.toolName ?? event.label ?? "tool",
       ...identity,
+      argumentsSource: "missing",
       arguments: "{}",
     });
   }
@@ -1948,6 +2214,7 @@ export function createChatgptWebMergeState(): ChatgptWebMergeState {
     endMeta: {},
     chunkCount: 0,
     reasoningTransitions: [],
+    workReasoningTransitions: [],
     dilToolEvents: [],
   };
 }
@@ -1986,14 +2253,19 @@ export function pushChatgptWeb(
 export function snapshotChatgptWeb(
   state: ChatgptWebMergeState,
   observation?: AiMergeObservation,
+  options?: { workReasoningHierarchy?: boolean },
 ): MergeChannelsResult {
-  const stages = reasoningStages(state, observation);
+  const tools = toolCalls(state);
+  const flatStages = reasoningStages(state, observation, tools);
+  const stages = options?.workReasoningHierarchy
+    ? workReasoningStages(state, flatStages, observation)
+    : flatStages;
   const duration = reasoningDurationInfo(state, observation);
   return {
     channels: {
       content: finalAssistantText(state),
       reasoning: visibleReasoningText(stages, duration.duration, duration.kind),
-      tools: toolCalls(state),
+      tools,
       reasoningStages: stages,
       reasoningDurationSec: duration.duration,
       reasoningDurationKind: duration.kind,

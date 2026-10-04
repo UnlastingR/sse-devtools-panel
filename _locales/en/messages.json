@@ -137,6 +137,9 @@
   "conversationReasoningUnclassified": {
     "message": "Preparation"
   },
+  "conversationReasoningActivity": {
+    "message": "Activity"
+  },
   "conversationReasoningCommentary": {
     "message": "Commentary"
   },
@@ -175,6 +178,9 @@
   },
   "conversationToolsArgs": {
     "message": "Arguments"
+  },
+  "conversationToolsArgsMissing": {
+    "message": "Arguments were not provided by the captured stream"
   },
   "conversationToolsFunction": {
     "message": "Function"

@@ -99,6 +99,157 @@ function findItem(result: ReturnType<typeof merged>, predicate: (text: string) =
 }
 
 describe("ChatGPT reasoning timing", () => {
+  it("nests Work current_status updates under the next DIL title", () => {
+    const result = merged([
+      ev(
+        JSON.stringify({
+          o: "add",
+          v: {
+            message: assistant(
+              "work-thoughts",
+              null,
+              "all",
+              {
+                model_slug: "gpt-6-luna-wm",
+                working_turn_id: "work",
+                turn_exchange_id: "turn",
+                dil_v2_reasoning: {
+                  appData: { title: "Worked", current_status: "Thinking", items: [] },
+                },
+              },
+              {
+                content_type: "thoughts",
+                thoughts: [{ summary: "Thinking", content: "", finished: false }],
+              },
+              null,
+            ),
+          },
+          conversation_id: "conv",
+        }),
+        "delta",
+        10_000,
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/title",
+              o: "replace",
+              v: "梳理仓库巡检进展与优化方向",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "add",
+              v: "Checking available workspace",
+            },
+          ],
+        }),
+        "delta",
+        16_000,
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "replace",
+              v: "Scanning repository inventory",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/title",
+              o: "replace",
+              v: "列出用户可访问的 GitHub 仓库",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "remove",
+            },
+          ],
+        }),
+        "delta",
+        28_000,
+      ),
+    ]);
+
+    expect(result.profile).toBe("chatgpt-web-work");
+    const stages = result.channels.reasoningStages ?? [];
+    expect(stages.map((stage) => stage.title)).toEqual([
+      "梳理仓库巡检进展与优化方向",
+      "列出用户可访问的 GitHub 仓库",
+    ]);
+    const second = stages[1];
+    expect(
+      second?.items.filter((item) => item.kind === "activity").map((item) => item.text),
+    ).toEqual(["Checking available workspace", "Scanning repository inventory"]);
+    expect(result.channels.reasoning).toContain("活动 · Checking available workspace");
+    expect(result.channels.reasoning).not.toContain("阶段 · Checking available workspace");
+  });
+
+  it("keeps the same DIL transitions flat in normal Chat", () => {
+    const result = merged([
+      ev(
+        JSON.stringify({
+          o: "add",
+          v: {
+            message: assistant(
+              "chat-thoughts",
+              null,
+              "all",
+              {
+                model_slug: "gpt-5.6-sol",
+                turn_exchange_id: "turn",
+                dil_v2_reasoning: {
+                  appData: { title: "Worked", current_status: "Thinking", items: [] },
+                },
+              },
+              {
+                content_type: "thoughts",
+                thoughts: [{ summary: "Thinking", content: "", finished: false }],
+              },
+              null,
+            ),
+          },
+          conversation_id: "conv",
+        }),
+        "delta",
+        10_000,
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "replace",
+              v: "Checking available workspace",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/title",
+              o: "replace",
+              v: "列出用户可访问的 GitHub 仓库",
+            },
+          ],
+        }),
+        "delta",
+        20_000,
+      ),
+    ]);
+
+    expect(result.profile).toBe("chatgpt-web-chat");
+    expect(
+      result.channels.reasoningStages?.some(
+        (stage) => stage.title === "Checking available workspace",
+      ),
+    ).toBe(true);
+    expect(
+      result.channels.reasoningStages
+        ?.flatMap((stage) => stage.items)
+        .some((item) => item.kind === "activity"),
+    ).toBe(false);
+  });
+
   it("does not duplicate a DIL status as both stage title and identical summary", () => {
     const result = merged([
       ev(

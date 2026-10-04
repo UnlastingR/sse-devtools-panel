@@ -1878,6 +1878,147 @@ describe("ai-merge", () => {
     }
 
     {
+      const mappedAsdk = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "mapped-thoughts",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "Thinking", content: "", finished: false }],
+                },
+                metadata: {
+                  model_slug: "gpt-6-luna-wm",
+                  working_turn_id: "work",
+                  turn_exchange_id: "exchange",
+                  dil_v2_reasoning: { appData: { title: "Worked", items: [] } },
+                },
+                recipient: "all",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "patch",
+            v: [
+              {
+                p: "/message/metadata/dil_v2_reasoning/appData/items",
+                o: "append",
+                v: [
+                  {
+                    id: "exec-mapped:integration",
+                    type: "connector_call",
+                    label: "Using Devspace integration",
+                    connectorId: "asdk_app_x",
+                    toolName: "devspace.open_workspace",
+                  },
+                ],
+              },
+            ],
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "mapped-call",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "code",
+                  text: JSON.stringify({
+                    path: "/asdk_app_x/link_y/open_workspace",
+                    args: { mode: "checkout", path: "/root/codex" },
+                  }),
+                },
+                metadata: {
+                  working_turn_id: "work",
+                  turn_exchange_id: "exchange",
+                },
+                recipient: "api_tool.call_tool",
+                channel: "commentary",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(mappedAsdk, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `mapped asdk tools: ${t.channels.tools.length}`);
+      assert(t.channels.tools[0]?.provider === "Devspace", "internal asdk id maps to Devspace");
+      assert(
+        !t.channels.tools.some((tool) => (tool.provider ?? "").startsWith("asdk_app_")),
+        "internal asdk id is never exposed as provider",
+      );
+    }
+
+    {
+      const dilOnly = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "dil-only",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "Thinking", content: "", finished: false }],
+                },
+                metadata: {
+                  model_slug: "gpt-6-luna-wm",
+                  working_turn_id: "work",
+                  turn_exchange_id: "exchange",
+                  dil_v2_reasoning: { appData: { title: "Worked", items: [] } },
+                },
+                recipient: "all",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "patch",
+            v: [
+              {
+                p: "/message/metadata/dil_v2_reasoning/appData/items",
+                o: "append",
+                v: [
+                  {
+                    id: "exec-dil-only:integration",
+                    type: "connector_call",
+                    label: "Using Devspace integration",
+                    connectorId: "asdk_app_x",
+                    toolName: "devspace.read",
+                  },
+                ],
+              },
+            ],
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(dilOnly, "https://chatgpt.com/backend-api/f/conversation");
+      assert(t.channels.tools.length === 1, `DIL-only tools: ${t.channels.tools.length}`);
+      assert(
+        t.channels.tools[0]?.argumentsSource === "missing",
+        "DIL-only args are marked missing",
+      );
+    }
+
+    {
       const jitMcp = [
         ev("v1", "delta_encoding"),
         ev(

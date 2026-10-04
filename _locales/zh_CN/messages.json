@@ -137,6 +137,9 @@
   "conversationReasoningUnclassified": {
     "message": "准备"
   },
+  "conversationReasoningActivity": {
+    "message": "活动"
+  },
   "conversationReasoningCommentary": {
     "message": "说明"
   },
@@ -175,6 +178,9 @@
   },
   "conversationToolsArgs": {
     "message": "参数"
+  },
+  "conversationToolsArgsMissing": {
+    "message": "原始流未提供参数"
   },
   "conversationToolsFunction": {
     "message": "函数"
