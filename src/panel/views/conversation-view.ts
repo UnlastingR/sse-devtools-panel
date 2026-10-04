@@ -358,13 +358,11 @@ function createReasoningPane(
       head.title = isOpen ? t("conversationReasoningCollapse") : t("conversationReasoningExpand");
     }
 
-    if (hasDetails) {
-      const caret = document.createElement("span");
-      caret.className = "reasoning-stage-caret";
-      caret.innerHTML = renderIcon("caret", "reasoning-stage-caret-icon");
-      caret.setAttribute("aria-hidden", "true");
-      head.appendChild(caret);
-    }
+    const caret = document.createElement("span");
+    caret.className = `reasoning-stage-caret${hasDetails ? "" : " is-placeholder"}`;
+    if (hasDetails) caret.innerHTML = renderIcon("caret", "reasoning-stage-caret-icon");
+    caret.setAttribute("aria-hidden", "true");
+    head.appendChild(caret);
 
     const time = document.createElement("span");
     time.className = "reasoning-stage-time";
