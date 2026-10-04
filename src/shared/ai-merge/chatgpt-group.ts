@@ -10,6 +10,20 @@ export type MergedChatgptTurn = {
   conversation: AiConversation;
 };
 
+function requestThinkingEffort(record: StreamRecord): string | undefined {
+  const payload = record.requestPayloadPreview;
+  if (!payload) return undefined;
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    const effort = (parsed as Record<string, unknown>).thinking_effort;
+    return typeof effort === "string" && effort.trim() ? effort.trim() : undefined;
+  } catch {
+    const match = payload.match(/"thinking_effort"\s*:\s*"([^"]+)"/i);
+    return match?.[1]?.trim() || undefined;
+  }
+}
+
 function shiftedStages(
   record: StreamRecord,
   baseStartedAt: number,
@@ -110,6 +124,11 @@ export function mergeChatgptTurnGroup(
     (acc, part) => ({ ...acc, ...part.conversation.endMeta }),
     {} as AiConversation["endMeta"],
   );
+  if (!latestEndMeta.thinkingEffort) {
+    latestEndMeta.thinkingEffort = group.records
+      .map(requestThinkingEffort)
+      .find((value): value is string => Boolean(value));
+  }
 
   const conversation: AiConversation = {
     ...parts.at(-1)!.conversation,

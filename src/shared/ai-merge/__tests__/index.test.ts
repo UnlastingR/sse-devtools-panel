@@ -3,6 +3,7 @@ import { detectAiProfile, vendorHintFromUrl } from "../../ai-profile";
 import {
   ConversationMergeSession,
   conversationHasContent,
+  mergeChatgptTurnGroup,
   mergeAiConversation,
   sanitizeChatgptAnswerText,
 } from "../index";
@@ -12,6 +13,95 @@ function assert(cond: unknown, msg: string): asserts cond {
 }
 
 describe("ai-merge", () => {
+  it("reads Work thinking effort from server metadata", () => {
+    const events = [
+      {
+        event: "delta",
+        data: JSON.stringify({
+          o: "add",
+          v: {
+            message: {
+              id: "work-message",
+              author: { role: "assistant" },
+              content: { content_type: "text", parts: [""] },
+              metadata: {
+                working_turn_id: "work",
+                turn_exchange_id: "turn",
+                resolved_model_slug: "gpt-6-luna-wm",
+              },
+              recipient: "all",
+            },
+          },
+          conversation_id: "conv",
+        }),
+        raw: "",
+        index: 0,
+        receivedAt: 1_000,
+      },
+      {
+        event: "message",
+        data: JSON.stringify({
+          type: "server_ste_metadata",
+          metadata: {
+            requested_model_experience: "work",
+            product_experience: "work",
+            thinking_effort: "max",
+          },
+          conversation_id: "conv",
+        }),
+        raw: "",
+        index: 1,
+        receivedAt: 1_100,
+      },
+    ];
+    const merged = mergeAiConversation(events, "https://chatgpt.com/backend-api/f/conversation");
+    expect(merged.profile).toBe("chatgpt-web-work");
+    expect(merged.endMeta.thinkingEffort).toBe("max");
+  });
+
+  it("inherits Work thinking effort from the request payload for short continuations", () => {
+    const record = {
+      requestId: "short-work",
+      url: "https://chatgpt.com/backend-api/f/conversation",
+      method: "POST",
+      transport: "fetch" as const,
+      streamKind: "sse" as const,
+      startedAt: 1_000,
+      endedAt: 2_000,
+      streamStatus: "done" as const,
+      requestPayloadPreview: JSON.stringify({ thinking_effort: "max" }),
+      raw: "",
+      events: [
+        {
+          event: "delta",
+          data: JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "short-message",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  working_turn_id: "work",
+                  turn_exchange_id: "turn",
+                  resolved_model_slug: "gpt-6-luna-wm",
+                },
+                recipient: "all",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          raw: "",
+          index: 0,
+          receivedAt: 1_100,
+        },
+      ],
+    };
+    const grouped = mergeChatgptTurnGroup(record, [record]);
+    expect(grouped?.conversation.profile).toBe("chatgpt-web-work");
+    expect(grouped?.conversation.endMeta.thinkingEffort).toBe("max");
+  });
+
   it("upgrades a ChatGPT web stream from chat to Work when later metadata arrives", () => {
     const session = new ConversationMergeSession();
     const url = "https://chatgpt.com/backend-api/f/conversation";

@@ -186,6 +186,18 @@ function observedSeconds(receivedAtMs?: number): number | undefined {
     : undefined;
 }
 
+function applyChatgptMetadataToEndMeta(
+  metadata: Record<string, unknown> | null,
+  state: ChatgptWebMergeState,
+): void {
+  if (!metadata) return;
+  const model = metadata.resolved_model_slug ?? metadata.model_slug ?? metadata.backend_model;
+  if (typeof model === "string") state.endMeta.model = model;
+  if (typeof metadata.thinking_effort === "string" && metadata.thinking_effort.trim()) {
+    state.endMeta.thinkingEffort = metadata.thinking_effort.trim();
+  }
+}
+
 function ingestMessage(raw: unknown, state: ChatgptWebMergeState, receivedAtMs?: number): void {
   if (!isRecord(raw) || typeof raw.id !== "string") return;
   const author = isRecord(raw.author) ? raw.author : null;
@@ -224,11 +236,7 @@ function ingestMessage(raw: unknown, state: ChatgptWebMergeState, receivedAtMs?:
   state.lastPath = "";
   state.lastOp = "";
 
-  const model = msg.metadata.resolved_model_slug ?? msg.metadata.model_slug;
-  if (typeof model === "string") state.endMeta.model = model;
-  if (typeof msg.metadata.thinking_effort === "string") {
-    state.endMeta.thinkingEffort = msg.metadata.thinking_effort;
-  }
+  applyChatgptMetadataToEndMeta(msg.metadata, state);
 }
 
 function currentMessage(state: ChatgptWebMergeState): ChatgptMessage | undefined {
@@ -379,11 +387,7 @@ function applyMessagePatch(
   }
   if (path === "/message/metadata" && isRecord(value) && (op === "append" || op === "add")) {
     Object.assign(msg.metadata, value);
-    const model = msg.metadata.resolved_model_slug ?? msg.metadata.model_slug;
-    if (typeof model === "string") state.endMeta.model = model;
-    if (typeof msg.metadata.thinking_effort === "string") {
-      state.endMeta.thinkingEffort = msg.metadata.thinking_effort;
-    }
+    applyChatgptMetadataToEndMeta(msg.metadata, state);
     return;
   }
   const metadataPrefix = "/message/metadata/";
@@ -1800,6 +1804,15 @@ export function pushChatgptWeb(
     }
     const parsed = parseEventData(ev.data);
     if (!isRecord(parsed)) continue;
+    if (parsed.type === "server_ste_metadata" && isRecord(parsed.metadata)) {
+      applyChatgptMetadataToEndMeta(parsed.metadata, state);
+    }
+    if (parsed.type === "input_message" && isRecord(parsed.input_message)) {
+      applyChatgptMetadataToEndMeta(
+        isRecord(parsed.input_message.metadata) ? parsed.input_message.metadata : null,
+        state,
+      );
+    }
     if (ev.event === "delta") {
       ingestDelta(parsed, state, ev.receivedAt);
       continue;
