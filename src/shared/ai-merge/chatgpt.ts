@@ -151,7 +151,7 @@ function jitToolRequest(msg: ChatgptMessage): JitToolRequest | null {
       ? body.connector_name.trim()
       : undefined;
   const args = "args" in params ? params.args : {};
-  let payload = "{}";
+  let payload: string;
   try {
     payload = JSON.stringify({ ...(path ? { path } : {}), args: args ?? {} });
   } catch {
