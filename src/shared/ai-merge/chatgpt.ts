@@ -1230,7 +1230,7 @@ function measuredLogicalToolDurationSec(
 function reasoningEndElapsedSec(
   state: ChatgptWebMergeState,
   start?: number,
-  observation?: AiMergeObservation,
+  _observation?: AiMergeObservation,
 ): number | undefined {
   if (start == null) return undefined;
   let max: number | undefined;
