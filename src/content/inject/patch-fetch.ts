@@ -10,6 +10,21 @@ import {
 import { captureFetchResponseBody, createConnectJsonSink, createFetchTextSink } from "./stream";
 import type { PostChunk, PostDiscard, PostEnd, PostError, PostStart } from "./types";
 
+function isChatGptConversationStream(url: string): boolean {
+  try {
+    const parsed = new URL(url, window.location.href);
+    const isConversationPath =
+      parsed.pathname === "/backend-api/f/conversation" ||
+      parsed.pathname === "/backend-api/f/conversation/resume";
+    return (
+      (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) &&
+      isConversationPath
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function patchFetch(
   nextId: () => string,
   postStart: PostStart,
@@ -93,7 +108,12 @@ export function patchFetch(
         streamKind === "connect-json"
           ? createConnectJsonSink(requestId, postChunk, postEnd, postError)
           : createFetchTextSink(requestId, postChunk, postEnd, postError);
-      return captureFetchResponseBody(response, sink);
+      // Keep ChatGPT's long-lived conversation SSE streams single-consumer.
+      // response.clone() tees the body into another consumer, which can change
+      // buffering/backpressure behavior for a stream that may stay open for a
+      // long time. Observe the page's own reads instead.
+      const captureMode = isChatGptConversationStream(response.url || url) ? "observe" : "clone";
+      return captureFetchResponseBody(response, sink, captureMode);
     } catch (err) {
       if (announced) {
         const classified = classifyThrownError(err);

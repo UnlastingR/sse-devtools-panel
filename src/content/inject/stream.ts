@@ -206,7 +206,8 @@ export function observeStreamReads(
 /**
  * Capture fetch body bytes.
  * Prefer clone()+pump so we do not depend on the page starting to read.
- * Fall back to instance-level getReader observation on the page body.
+ * In observe mode, attach only to the page body's reader and never create a
+ * second consumer. Otherwise fall back to that observation if clone() fails.
  */
 export function captureFetchResponseBody(
   response: Response,
@@ -215,9 +216,15 @@ export function captureFetchResponseBody(
     onComplete: () => void;
     onError: (message: string, closeReason?: Extract<StreamCloseReason, "abort" | "error">) => void;
   },
+  mode: "clone" | "observe" = "clone",
 ): Response {
   if (!response.body) {
     sink.onComplete();
+    return response;
+  }
+
+  if (mode === "observe") {
+    observeStreamReads(response.body, sink);
     return response;
   }
 
