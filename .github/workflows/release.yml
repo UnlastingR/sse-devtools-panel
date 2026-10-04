@@ -39,7 +39,7 @@ jobs:
           const path = 'manifest.json';
           const manifest = JSON.parse(readFileSync(path, 'utf8'));
           manifest.version = version;
-          manifest.version_name = `${version} (GitHub Release)`;
+          manifest.version_name = version;
           writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
           console.log(`Release version: ${version}`);
           NODE

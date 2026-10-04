@@ -51,8 +51,8 @@ jobs:
           const path = 'manifest.json';
           const manifest = JSON.parse(readFileSync(path, 'utf8'));
           const run = process.env.CI_RUN_NUMBER;
-          manifest.version_name = `${manifest.version} (main CI #${run})`;
           manifest.version = `${manifest.version}.${run}`;
+          manifest.version_name = manifest.version;
           writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
           NODE
           echo "version=$DEPLOY_VERSION" >> "$GITHUB_OUTPUT"
