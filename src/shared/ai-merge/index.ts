@@ -85,6 +85,7 @@ export {
   clearConversationMergeSessions,
   syncConversationMergeSession,
 } from "./session";
+export { mergeChatgptTurnGroup, type MergedChatgptTurn } from "./chatgpt-group";
 
 /**
  * Merge stream events into an AI conversation (one-shot via incremental session).

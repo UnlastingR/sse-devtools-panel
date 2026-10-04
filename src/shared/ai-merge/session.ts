@@ -202,6 +202,23 @@ export class ConversationMergeSession {
       return;
     }
 
+    // ChatGPT Work continuations can begin with the same generic/chat bootstrap
+    // as a normal web chat and only reveal product_experience=work later in the
+    // stream. Allow a locked ChatGPT-chat session to upgrade in place once
+    // stronger Work evidence arrives; replay the stream into a fresh ChatGPT
+    // state so no earlier mutable snapshot survives the subtype change.
+    if (this.detection?.profile === "chatgpt-web-chat") {
+      const nextDetection = detectAiProfile(events, this.url);
+      if (nextDetection.profile === "chatgpt-web-work") {
+        this.detection = nextDetection;
+        this.vendor = createVendor("chatgpt-web-work");
+        if (this.vendor) pushVendor(this.vendor, events);
+        this.offset = events.length;
+        this.lastConsumedEvent = events.at(-1);
+        return;
+      }
+    }
+
     if (this.offset >= events.length) return;
     const pending = events.slice(this.offset);
     if (this.vendor) pushVendor(this.vendor, pending);

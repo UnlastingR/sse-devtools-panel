@@ -126,6 +126,9 @@
   gap: 8px;
   padding: 9px 11px;
   background: var(--canvas);
+  justify-content: flex-start;
+  align-content: flex-start;
+  overflow-anchor: none;
 }
 
 .conversation-tools-empty {
@@ -144,6 +147,9 @@
   gap: 8px;
   padding: 9px 11px;
   background: var(--canvas);
+  justify-content: flex-start;
+  align-content: flex-start;
+  overflow-anchor: none;
 }
 
 .conversation-reasoning-empty {

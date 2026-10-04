@@ -1,12 +1,63 @@
 import { describe, expect, it } from "vitest";
 import { detectAiProfile, vendorHintFromUrl } from "../../ai-profile";
-import { conversationHasContent, mergeAiConversation, sanitizeChatgptAnswerText } from "../index";
+import {
+  ConversationMergeSession,
+  conversationHasContent,
+  mergeAiConversation,
+  sanitizeChatgptAnswerText,
+} from "../index";
 
 function assert(cond: unknown, msg: string): asserts cond {
   expect(cond, msg).toBeTruthy();
 }
 
 describe("ai-merge", () => {
+  it("upgrades a ChatGPT web stream from chat to Work when later metadata arrives", () => {
+    const session = new ConversationMergeSession();
+    const url = "https://chatgpt.com/backend-api/f/conversation";
+    const first = [
+      {
+        data: JSON.stringify({
+          o: "add",
+          v: {
+            message: {
+              id: "m1",
+              author: { role: "assistant" },
+              content: { content_type: "text", parts: [""] },
+              metadata: { working_turn_id: "w", turn_exchange_id: "x" },
+              recipient: "all",
+            },
+          },
+          conversation_id: "conv",
+        }),
+        event: "delta",
+        receivedAt: 1_000,
+      },
+    ];
+    session.push(first, url);
+    expect(session.snapshot().profile).toBe("chatgpt-web-chat");
+
+    const full = [
+      ...first,
+      {
+        data: JSON.stringify({
+          type: "server_ste_metadata",
+          metadata: {
+            requested_model_experience: "work",
+            product_experience: "work",
+            turn_mode: "projects",
+            temporal_conversation_turn: true,
+          },
+          conversation_id: "conv",
+        }),
+        event: "message",
+        receivedAt: 2_000,
+      },
+    ];
+    session.push(full, url);
+    expect(session.snapshot().profile).toBe("chatgpt-web-work");
+  });
+
   it("matches previous script coverage", () => {
     function ev(data: string, event = "message") {
       return { data, event };

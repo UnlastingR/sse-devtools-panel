@@ -9,6 +9,14 @@ export interface ChatgptTurnIdentity {
   turnExchangeId?: string;
 }
 
+export interface ChatgptTurnGroup {
+  key: string;
+  profile: Extract<AiProfile, "chatgpt-web-chat" | "chatgpt-web-work">;
+  conversationId: string;
+  workingTurnId: string;
+  records: StreamRecord[];
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -22,6 +30,75 @@ function parseJson(data: string): JsonRecord | null {
   } catch {
     return null;
   }
+}
+
+function isChatgptUploadStreamUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url, "https://dummy.local");
+    return (
+      parsed.hostname.toLowerCase() === "chatgpt.com" &&
+      parsed.pathname.includes("/backend-api/files/process_upload_stream")
+    );
+  } catch {
+    return url.includes("/backend-api/files/process_upload_stream");
+  }
+}
+
+function collectFileIds(value: unknown, out: Set<string>, depth = 0): void {
+  if (depth > 12 || value == null) return;
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/(?:sediment:\/\/)?(file_[A-Za-z0-9_-]+)/g)) {
+      if (match[1]) out.add(match[1]);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectFileIds(item, out, depth + 1);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (/^(?:file_id|file_ids|attachment_id|attachment_ids)$/i.test(key)) {
+      if (typeof item === "string" && item.startsWith("file_")) out.add(item);
+      if (Array.isArray(item)) {
+        for (const id of item) {
+          if (typeof id === "string" && id.startsWith("file_")) out.add(id);
+        }
+      }
+    }
+    collectFileIds(item, out, depth + 1);
+  }
+}
+
+export function chatgptRecordFileIds(record: StreamRecord): Set<string> {
+  const out = new Set<string>();
+  if (record.requestPayloadPreview) {
+    try {
+      collectFileIds(JSON.parse(record.requestPayloadPreview) as unknown, out);
+    } catch {
+      for (const match of record.requestPayloadPreview.matchAll(/\bfile_[A-Za-z0-9_-]+\b/g)) {
+        out.add(match[0]);
+      }
+    }
+  }
+  try {
+    const parsed = new URL(record.url, "https://dummy.local");
+    for (const value of parsed.searchParams.values()) {
+      if (value.startsWith("file_")) out.add(value);
+    }
+  } catch {
+    // best effort only
+  }
+  for (const event of record.events) {
+    const parsed = parseJson(event.data);
+    if (parsed) collectFileIds(parsed, out);
+  }
+  return out;
+}
+
+function intersects(a: Set<string>, b: Set<string>): boolean {
+  for (const value of a) if (b.has(value)) return true;
+  return false;
 }
 
 function messageMetadata(value: unknown): JsonRecord | null {
@@ -79,6 +156,99 @@ export function chatgptTurnIdentity(
 
 function chatgptProfile(record: StreamRecord): AiProfile {
   return detectAiProfile(record.events, record.url).profile;
+}
+
+function sameWorkingTurn(record: StreamRecord, identity: ChatgptTurnIdentity): boolean {
+  const other = chatgptTurnIdentity(record.events);
+  return Boolean(
+    other &&
+    other.conversationId === identity.conversationId &&
+    other.workingTurnId === identity.workingTurnId,
+  );
+}
+
+function chatTurnGeneration(identity: ChatgptTurnIdentity): string {
+  return identity.turnExchangeId ?? identity.workingTurnId;
+}
+
+/**
+ * Resolve one user-visible ChatGPT turn. Work continuations may change
+ * turn_exchange_id after an approval while preserving working_turn_id, so any
+ * Work evidence in the family upgrades every sibling stream into one mother
+ * turn. Normal Chat keeps follow-up turns separate by generation.
+ */
+export function resolveChatgptTurnGroup(
+  selected: StreamRecord,
+  records: Iterable<StreamRecord>,
+): ChatgptTurnGroup | null {
+  const all = Array.from(records);
+  let anchor = selected;
+  if (!isChatgptConversationUrl(anchor.url)) {
+    if (!isChatgptUploadStreamUrl(anchor.url)) return null;
+    const selectedFiles = chatgptRecordFileIds(anchor);
+    anchor =
+      all.find(
+        (record) =>
+          isChatgptConversationUrl(record.url) &&
+          selectedFiles.size > 0 &&
+          intersects(selectedFiles, chatgptRecordFileIds(record)),
+      ) ?? selected;
+    if (anchor === selected) return null;
+  }
+  const identity = chatgptTurnIdentity(anchor.events);
+  if (!identity) return null;
+  const family = all.filter((record) => sameWorkingTurn(record, identity));
+  if (!family.some((record) => record.requestId === anchor.requestId)) family.push(anchor);
+  const isWork = family.some((record) => chatgptProfile(record) === "chatgpt-web-work");
+  const related = isWork
+    ? family
+    : family.filter((record) => {
+        const other = chatgptTurnIdentity(record.events);
+        return Boolean(other && chatTurnGeneration(other) === chatTurnGeneration(identity));
+      });
+  const referencedFiles = new Set<string>();
+  for (const record of related) {
+    for (const id of chatgptRecordFileIds(record)) referencedFiles.add(id);
+  }
+  if (referencedFiles.size > 0) {
+    for (const record of all) {
+      if (!isChatgptUploadStreamUrl(record.url)) continue;
+      if (!intersects(referencedFiles, chatgptRecordFileIds(record))) continue;
+      if (!related.some((item) => item.requestId === record.requestId)) related.push(record);
+    }
+  }
+  related.sort((a, b) => a.startedAt - b.startedAt || a.requestId.localeCompare(b.requestId));
+  const profile = isWork ? "chatgpt-web-work" : "chatgpt-web-chat";
+  const generation = isWork ? identity.workingTurnId : chatTurnGeneration(identity);
+  return {
+    key: `chatgpt-turn:${identity.conversationId}:${generation}`,
+    profile,
+    conversationId: identity.conversationId,
+    workingTurnId: identity.workingTurnId,
+    records: related,
+  };
+}
+
+export function chatgptMotherTurnKey(
+  record: StreamRecord,
+  records: Iterable<StreamRecord>,
+): string | null {
+  return resolveChatgptTurnGroup(record, records)?.key ?? null;
+}
+
+export function resolveChatgptTurnGroups(records: Iterable<StreamRecord>): ChatgptTurnGroup[] {
+  const all = Array.from(records).sort(
+    (a, b) => a.startedAt - b.startedAt || a.requestId.localeCompare(b.requestId),
+  );
+  const seen = new Set<string>();
+  const groups: ChatgptTurnGroup[] = [];
+  for (const record of all) {
+    const group = resolveChatgptTurnGroup(record, all);
+    if (!group || seen.has(group.key)) continue;
+    seen.add(group.key);
+    groups.push(group);
+  }
+  return groups;
 }
 
 export function chatgptTurnKey(record: StreamRecord): string | null {

@@ -35,6 +35,15 @@ type ReasoningTransition = {
   observedAt?: number;
 };
 
+type DilToolEvent = {
+  messageId: string;
+  id: string;
+  label?: string;
+  connectorId?: string;
+  toolName?: string;
+  observedAt?: number;
+};
+
 const CHATGPT_RICH_BLOCK_RE = /\uE200([A-Za-z0-9_:-]+)\uE202[\s\S]*?\uE201/g;
 const CHATGPT_RICH_BLOCK_TAIL_RE = /\uE200[A-Za-z0-9_:-]*\uE202[^\uE201]*$/g;
 
@@ -60,7 +69,57 @@ export type ChatgptWebMergeState = {
   endMeta: AiEndMeta;
   chunkCount: number;
   reasoningTransitions: ReasoningTransition[];
+  dilToolEvents: DilToolEvent[];
 };
+
+function recordDilToolItems(
+  state: ChatgptWebMergeState,
+  messageId: string,
+  value: unknown,
+  receivedAtMs?: number,
+): void {
+  const items = Array.isArray(value) ? value : [value];
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const id = typeof item.id === "string" ? item.id : "";
+    if (!id || state.dilToolEvents.some((event) => event.id === id)) continue;
+    state.dilToolEvents.push({
+      messageId,
+      id,
+      label: typeof item.label === "string" ? item.label : undefined,
+      connectorId: typeof item.connectorId === "string" ? item.connectorId : undefined,
+      toolName: typeof item.toolName === "string" ? item.toolName : undefined,
+      observedAt: observedSeconds(receivedAtMs),
+    });
+  }
+}
+
+function dilToolIdentity(
+  event: DilToolEvent,
+): Pick<AiToolCall, "provider" | "kind" | "source" | "operation"> {
+  const raw = event.toolName ?? "";
+  const [namespace, ...operationParts] = raw.split(".");
+  const providerMap: Record<string, string> = {
+    agentdock: "AgentDock",
+    devspace: "Devspace",
+    gmail: "Gmail",
+    files: "files",
+  };
+  const provider = providerMap[namespace.toLowerCase()] ?? (namespace || "tool");
+  return {
+    provider,
+    kind: "app",
+    source: event.connectorId?.startsWith("asdk_app_") ? "mcp" : undefined,
+    operation: operationParts.join(".") || undefined,
+  };
+}
+
+function dilToolLabel(event: DilToolEvent): string {
+  const identity = dilToolIdentity(event);
+  const source = identity.source ? ` · ${identity.source.toUpperCase()}` : "";
+  const operation = identity.operation ? ` · ${identity.operation}` : "";
+  return `${identity.provider ?? "tool"} · APP${source}${operation}`;
+}
 
 function cleanReasoningStatus(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -332,6 +391,9 @@ function applyMessagePatch(
     path.startsWith(metadataPrefix) &&
     (op === "add" || op === "replace" || op === "append" || op === "remove")
   ) {
+    if (path === "/message/metadata/dil_v2_reasoning/appData/items" && op === "append") {
+      recordDilToolItems(state, msg.id, value, receivedAtMs);
+    }
     applyMetadataPath(msg.metadata, path.slice(metadataPrefix.length), op, value);
     if (
       path === "/message/metadata/dil_v2_reasoning/appData/current_status" ||
@@ -949,7 +1011,33 @@ function toolIdentity(
   return {};
 }
 
+function observedReasoningBounds(state: ChatgptWebMergeState): {
+  start?: number;
+  end?: number;
+} {
+  let start: number | undefined;
+  let end: number | undefined;
+  const include = (value: number | undefined): void => {
+    if (value == null || !Number.isFinite(value)) return;
+    start = start == null ? value : Math.min(start, value);
+    end = end == null ? value : Math.max(end, value);
+  };
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg) continue;
+    include(msg.observedAt);
+    include(msg.observedUpdatedAt);
+  }
+  for (const transition of state.reasoningTransitions) include(transition.observedAt);
+  return { start, end };
+}
+
 function reasoningStartTime(state: ChatgptWebMergeState): number | undefined {
+  // Browser receive time is the primary clock for ChatGPT Web. Work frequently
+  // leaves create_time/update_time null and may emit reasoning_start_time only
+  // in one continuation segment, while receivedAt exists for every delta.
+  const observed = observedReasoningBounds(state).start;
+  if (observed != null) return observed;
   for (const id of state.order) {
     const msg = state.messages.get(id);
     const value = msg?.metadata.reasoning_start_time;
@@ -1020,6 +1108,21 @@ function reasoningDurationInfo(
   state: ChatgptWebMergeState,
   observation?: AiMergeObservation,
 ): { duration?: number; kind?: "measured" | "inferred" } {
+  const observed = observedReasoningBounds(state);
+  if (observed.start != null) {
+    const observedEnd =
+      observation?.endedAtMs != null &&
+      Number.isFinite(observation.endedAtMs) &&
+      observation.streamStatus !== "streaming"
+        ? observation.endedAtMs / 1000
+        : observed.end;
+    if (observedEnd != null && observedEnd >= observed.start) {
+      return {
+        duration: observedEnd - observed.start,
+        kind: observation?.streamStatus === "streaming" ? "inferred" : "measured",
+      };
+    }
+  }
   const measured = reasoningDurationSec(state);
   const inferredTail = inferredOpenReasoningTailSec(state, observation);
   if (inferredTail != null) {
@@ -1031,7 +1134,7 @@ function reasoningDurationInfo(
 function reasoningElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
   if (start == null) return undefined;
   const timestamp =
-    msg.createdAt != null && Number.isFinite(msg.createdAt) ? msg.createdAt : msg.observedAt;
+    msg.observedAt != null && Number.isFinite(msg.observedAt) ? msg.observedAt : msg.createdAt;
   if (timestamp == null || !Number.isFinite(timestamp)) return undefined;
   return Math.max(0, timestamp - start);
 }
@@ -1067,11 +1170,13 @@ function reasoningElapsedSecWithFallback(
 function messageCompletionElapsedSec(msg: ChatgptMessage, start?: number): number | undefined {
   if (start == null) return undefined;
   const completedAt =
-    msg.updatedAt != null && Number.isFinite(msg.updatedAt)
-      ? msg.updatedAt
-      : msg.createdAt != null && Number.isFinite(msg.createdAt)
-        ? msg.createdAt
-        : (msg.observedUpdatedAt ?? msg.observedAt);
+    msg.observedUpdatedAt != null && Number.isFinite(msg.observedUpdatedAt)
+      ? msg.observedUpdatedAt
+      : msg.observedAt != null && Number.isFinite(msg.observedAt)
+        ? msg.observedAt
+        : msg.updatedAt != null && Number.isFinite(msg.updatedAt)
+          ? msg.updatedAt
+          : msg.createdAt;
   if (completedAt == null || !Number.isFinite(completedAt)) return undefined;
   return Math.max(0, completedAt - start);
 }
@@ -1102,6 +1207,14 @@ function reasoningEndElapsedSec(
   observation?: AiMergeObservation,
 ): number | undefined {
   if (start == null) return undefined;
+  const observed = observedReasoningBounds(state);
+  const observedEnd =
+    observation?.endedAtMs != null &&
+    Number.isFinite(observation.endedAtMs) &&
+    observation.streamStatus !== "streaming"
+      ? observation.endedAtMs / 1000
+      : observed.end;
+  if (observedEnd != null && observedEnd >= start) return observedEnd - start;
   const latestStart = reasoningSessionStarts(state).at(-1);
   if (
     latestStart != null &&
@@ -1297,6 +1410,21 @@ function reasoningStages(
         text: transition.text,
         elapsedSec,
         sourceMessageId: msg.id,
+      });
+    }
+
+    for (const toolEvent of state.dilToolEvents.filter((item) => item.messageId === msg.id)) {
+      const elapsedSec =
+        start != null && toolEvent.observedAt != null
+          ? Math.max(0, toolEvent.observedAt - start)
+          : reasoningElapsedSecWithFallback(msg, state, start);
+      const stage = stageFor(msg, reasoningStageTitle(msg, state), true);
+      stage.items.push({
+        kind: "tool",
+        text: dilToolLabel(toolEvent),
+        elapsedSec,
+        sourceMessageId: msg.id,
+        toolId: toolEvent.id,
       });
     }
 
@@ -1619,6 +1747,31 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
       });
     }
   }
+
+  const explicitCounts = new Map<string, number>();
+  for (const tool of out) {
+    const key = `${tool.provider ?? tool.name ?? ""}:${tool.operation ?? ""}`.toLowerCase();
+    explicitCounts.set(key, (explicitCounts.get(key) ?? 0) + 1);
+  }
+  const consumed = new Map<string, number>();
+  for (const event of state.dilToolEvents) {
+    if (out.some((tool) => tool.id === event.id)) continue;
+    const identity = dilToolIdentity(event);
+    const key = `${identity.provider ?? ""}:${identity.operation ?? ""}`.toLowerCase();
+    const used = consumed.get(key) ?? 0;
+    const explicit = explicitCounts.get(key) ?? 0;
+    if (used < explicit) {
+      consumed.set(key, used + 1);
+      continue;
+    }
+    out.push({
+      index: out.length,
+      id: event.id,
+      name: event.toolName ?? event.label ?? "tool",
+      ...identity,
+      arguments: "{}",
+    });
+  }
   return out;
 }
 
@@ -1631,6 +1784,7 @@ export function createChatgptWebMergeState(): ChatgptWebMergeState {
     endMeta: {},
     chunkCount: 0,
     reasoningTransitions: [],
+    dilToolEvents: [],
   };
 }
 

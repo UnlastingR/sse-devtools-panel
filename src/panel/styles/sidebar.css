@@ -146,6 +146,39 @@ select {
   background: var(--accent-strong);
 }
 
+.turn-group {
+  padding-bottom: 5px;
+}
+
+.turn-group-head {
+  cursor: pointer;
+}
+
+.turn-group-caret {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--text-faint);
+  font: 10px/1 var(--mono);
+  text-align: center;
+}
+
+.turn-group-children {
+  margin: 6px 0 0 10px;
+  padding: 0 0 0 7px;
+  border-left: 1px solid var(--stroke);
+  list-style: none;
+}
+
+.turn-group-children .stream-child {
+  margin-top: 2px;
+  padding: 6px 7px;
+  background: color-mix(in srgb, var(--canvas) 72%, transparent);
+}
+
+.turn-group-children .stream-child.active::before {
+  left: -8px;
+}
+
 .stream-head {
   display: flex;
   align-items: baseline;

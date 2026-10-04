@@ -30,7 +30,7 @@ import {
 } from "../shared/theme";
 import { stampReceivedAt } from "../shared/event-stamp";
 import { latestEventIdFromEvents, streamHasExplicitCompletion } from "../shared/stream-close";
-import { chatgptTurnKey, combineChatgptTurnRecords } from "../shared/chatgpt-logical-turn";
+import { chatgptMotherTurnKey } from "../shared/chatgpt-logical-turn";
 import { SseParser, type ParsedSseEvent } from "../shared/sse-parser";
 import { NdjsonParser } from "../shared/ndjson-parser";
 import { ConnectJsonParser } from "../shared/connect-json-parser";
@@ -39,6 +39,7 @@ import {
   conversationHasContent,
   discardConversationMergeSession,
   getConversationMergeSession,
+  mergeChatgptTurnGroup,
   syncConversationMergeSession,
 } from "../shared/ai-merge";
 import { initEventsColumnResizers } from "./widgets/column-resizer";
@@ -371,8 +372,11 @@ function selectionSharesChatgptTurn(requestId: string): boolean {
   const selected = state.streams.get(state.selectedId);
   const changed = state.streams.get(requestId);
   if (!selected || !changed) return false;
-  const selectedKey = chatgptTurnKey(selected);
-  return Boolean(selectedKey && selectedKey === chatgptTurnKey(changed));
+  const all = state.streams.values();
+  const selectedKey = chatgptMotherTurnKey(selected, all);
+  return Boolean(
+    selectedKey && selectedKey === chatgptMotherTurnKey(changed, state.streams.values()),
+  );
 }
 
 function onEnd(payload: StreamEndPayload): void {
@@ -579,7 +583,9 @@ function updateConversationTabCount(record: StreamRecord | undefined): void {
     return;
   }
 
-  const logicalRecord = combineChatgptTurnRecords(record, state.streams.values());
+  const grouped = mergeChatgptTurnGroup(record, state.streams.values());
+  const logicalRecord = grouped?.record ?? record;
+  const merged = grouped?.conversation;
   const streaming = logicalRecord.streamStatus === "streaming";
   const sameStream = convTabCountRequestId === logicalRecord.requestId;
   const due =
@@ -591,21 +597,19 @@ function updateConversationTabCount(record: StreamRecord | undefined): void {
 
   if (!due && sameStream) return;
 
-  const merged = syncConversationMergeSession(
-    logicalRecord.requestId,
-    logicalRecord.events,
-    logicalRecord.url,
-  );
+  const resolvedMerged =
+    merged ??
+    syncConversationMergeSession(logicalRecord.requestId, logicalRecord.events, logicalRecord.url);
   convTabCountAt = Date.now();
   convTabCountEvents = logicalRecord.events.length;
   convTabCountRequestId = logicalRecord.requestId;
 
-  if (conversationHasContent(merged)) {
+  if (conversationHasContent(resolvedMerged)) {
     elTabCountConversation.hidden = false;
     const n =
-      (merged.channels.content ? 1 : 0) +
-      (merged.channels.reasoning ? 1 : 0) +
-      (merged.channels.tools.length > 0 ? 1 : 0);
+      (resolvedMerged.channels.content ? 1 : 0) +
+      (resolvedMerged.channels.reasoning ? 1 : 0) +
+      (resolvedMerged.channels.tools.length > 0 ? 1 : 0);
     elTabCountConversation.textContent = String(Math.max(n, 1));
   } else {
     elTabCountConversation.hidden = true;
@@ -754,10 +758,12 @@ function renderRequestForSelection(record: StreamRecord | undefined): void {
 }
 
 function renderConversationForSelection(record: StreamRecord | undefined): void {
-  const logicalRecord = record
-    ? combineChatgptTurnRecords(record, state.streams.values())
-    : undefined;
-  renderConversation(logicalRecord, { copyText, showToast });
+  if (!record) {
+    renderConversation(undefined, { copyText, showToast });
+    return;
+  }
+  const grouped = mergeChatgptTurnGroup(record, state.streams.values());
+  renderConversation(grouped?.record ?? record, { copyText, showToast }, grouped?.conversation);
 }
 
 function setupTabs(): void {
@@ -797,6 +803,20 @@ function setupActions(): void {
     if (e.button !== 0) return;
     const li = (e.target as HTMLElement | null)?.closest("li.stream, li.stream-item");
     if (!(li instanceof HTMLLIElement) || !elList.contains(li)) return;
+    const turnKey = li.dataset.turnKey;
+    if (turnKey && !li.dataset.id) {
+      e.preventDefault();
+      if (state.expandedTurnGroups.has(turnKey)) state.expandedTurnGroups.delete(turnKey);
+      else state.expandedTurnGroups.add(turnKey);
+      const preferredId = li.dataset.preferredId;
+      if (preferredId && state.streams.has(preferredId) && state.selectedId !== preferredId) {
+        state.selectedId = preferredId;
+        state.selectedEventIndex = null;
+        renderDetail();
+      }
+      renderList();
+      return;
+    }
     const id = li.dataset.id;
     if (!id || !state.streams.has(id) || id === state.selectedId) return;
     state.selectedId = id;
@@ -817,6 +837,7 @@ function setupActions(): void {
     state.selectedEventIndex = null;
     state.streamsUrlFilterQuery = "";
     state.streamsTransportFilter = "all";
+    state.expandedTurnGroups.clear();
     state.pendingListRefreshWhilePaused = false;
     state.pendingDetailRefreshWhilePaused = false;
     elStreamsUrlFilter.value = "";

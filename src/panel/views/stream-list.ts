@@ -15,6 +15,7 @@ import {
 import { getStreamSpecWarnings, scanStreamAnomalies } from "../features/stream-anomalies";
 import { state } from "../core/state";
 import { refreshStatusbarSummary } from "../core/ui-chrome";
+import { resolveChatgptTurnGroups } from "../../shared/chatgpt-logical-turn";
 
 let listRenderScheduled = false;
 
@@ -57,18 +58,41 @@ function streamTimeTooltip(s: StreamRecord): string {
 
 export function renderList(): void {
   const urlFilter = state.streamsUrlFilterQuery.trim().toLowerCase();
-  const items = Array.from(state.streams.values())
-    .filter((s) => {
-      if (state.streamsTransportFilter !== "all" && s.transport !== state.streamsTransportFilter) {
-        return false;
-      }
-      if (!urlFilter) return true;
-      return s.url.toLowerCase().includes(urlFilter);
-    })
-    .sort((a, b) => a.startedAt - b.startedAt);
-  elEmpty.classList.toggle("hidden", items.length > 0);
+  const all = Array.from(state.streams.values());
+  const matches = (s: StreamRecord): boolean => {
+    if (state.streamsTransportFilter !== "all" && s.transport !== state.streamsTransportFilter) {
+      return false;
+    }
+    if (!urlFilter) return true;
+    return s.url.toLowerCase().includes(urlFilter);
+  };
+  // Chat and Work share the same mother-event UI even when a turn currently
+  // has only one physical stream. More continuation/upload children may arrive
+  // later without changing the list shape underneath the user.
+  const groups = resolveChatgptTurnGroups(all);
+  const groupedIds = new Set(
+    groups.flatMap((group) => group.records.map((record) => record.requestId)),
+  );
+  const standalone = all.filter((record) => !groupedIds.has(record.requestId) && matches(record));
+  const entries = [
+    ...groups
+      .map((group) => ({
+        type: "group" as const,
+        group,
+        visibleRecords: group.records.filter(matches),
+        startedAt: group.records[0]?.startedAt ?? 0,
+      }))
+      .filter((entry) => entry.visibleRecords.length > 0),
+    ...standalone.map((record) => ({
+      type: "stream" as const,
+      record,
+      startedAt: record.startedAt,
+    })),
+  ].sort((a, b) => a.startedAt - b.startedAt);
+  const itemsCount = entries.length;
+  elEmpty.classList.toggle("hidden", itemsCount > 0);
   if (
-    items.length === 0 &&
+    itemsCount === 0 &&
     state.streams.size > 0 &&
     (urlFilter || state.streamsTransportFilter !== "all")
   ) {
@@ -85,36 +109,29 @@ export function renderList(): void {
     `;
   }
 
-  const seen = new Set<string>();
-  for (const s of items) {
-    seen.add(s.requestId);
-    const fingerprint = streamItemFingerprint(s);
+  const renderStream = (s: StreamRecord, extraClass = ""): HTMLLIElement => {
+    const li = document.createElement("li");
+    li.dataset.id = s.requestId;
+    li.className = `stream${extraClass ? ` ${extraClass}` : ""}${
+      s.requestId === state.selectedId ? " active" : ""
+    }`;
     const anomalyCount = scanStreamAnomalies(s).length;
     const specCount = getStreamSpecWarnings(s).length;
-    let li = elList.querySelector<HTMLLIElement>(`li[data-id="${CSS.escape(s.requestId)}"]`);
-    if (!li) {
-      li = document.createElement("li");
-      li.dataset.id = s.requestId;
-      elList.appendChild(li);
-    }
-    li.className = "stream" + (s.requestId === state.selectedId ? " active" : "");
-    if (li.dataset.fingerprint !== fingerprint) {
-      li.dataset.fingerprint = fingerprint;
-      const transportClass =
-        s.transport === "fetch" ||
-        s.transport === "xhr" ||
-        s.transport === "eventsource" ||
-        s.transport === "websocket"
-          ? s.transport
-          : "";
-      const tip = escapeHtml(streamTimeTooltip(s));
-      const endHtml =
-        typeof s.endedAt === "number" && Number.isFinite(s.endedAt)
-          ? `<time class="stream-when-end" datetime="${new Date(s.endedAt).toISOString()}" title="${tip}">${escapeHtml(
-              formatTimeShort(s.endedAt),
-            )}</time>`
-          : "";
-      li.innerHTML = `
+    const transportClass =
+      s.transport === "fetch" ||
+      s.transport === "xhr" ||
+      s.transport === "eventsource" ||
+      s.transport === "websocket"
+        ? s.transport
+        : "";
+    const tip = escapeHtml(streamTimeTooltip(s));
+    const endHtml =
+      typeof s.endedAt === "number" && Number.isFinite(s.endedAt)
+        ? `<time class="stream-when-end" datetime="${new Date(s.endedAt).toISOString()}" title="${tip}">${escapeHtml(
+            formatTimeShort(s.endedAt),
+          )}</time>`
+        : "";
+    li.innerHTML = `
         <div class="stream-head">
           <div class="stream-path" title="${escapeHtml(s.url)}"><span class="method">${escapeHtml(s.method)}</span>${escapeHtml(shortPath(s.url))}</div>
           <time class="stream-when-start" datetime="${new Date(s.startedAt).toISOString()}" title="${tip}">${escapeHtml(
@@ -152,27 +169,63 @@ export function renderList(): void {
           </span>
         </div>
       `;
-    }
-  }
+    return li;
+  };
 
-  for (const node of Array.from(elList.children)) {
-    const li = node as HTMLLIElement;
-    const id = li.dataset.id;
-    if (!id || !seen.has(id)) {
-      li.remove();
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    if (entry.type === "stream") {
+      fragment.appendChild(renderStream(entry.record));
+      continue;
     }
-  }
 
-  // Keep DOM order aligned with sorted items without full rebuild.
-  for (let i = 0; i < items.length; i++) {
-    const li = elList.querySelector<HTMLLIElement>(
-      `li[data-id="${CSS.escape(items[i].requestId)}"]`,
+    const { group, visibleRecords } = entry;
+    const parent = document.createElement("li");
+    const active = group.records.some((record) => record.requestId === state.selectedId);
+    const expanded = state.expandedTurnGroups.has(group.key);
+    const first = group.records[0]!;
+    const last = group.records.at(-1)!;
+    const anyStreaming = group.records.some((record) => record.streamStatus === "streaming");
+    const totalEvents = group.records.reduce((sum, record) => sum + record.events.length, 0);
+    const transports = Array.from(
+      new Set(group.records.map((record) => transportLabel(record.transport))),
     );
-    if (!li) continue;
-    if (elList.children[i] !== li) {
-      elList.insertBefore(li, elList.children[i] ?? null);
+    parent.className = `stream turn-group${active ? " active" : ""}${expanded ? " is-expanded" : ""}`;
+    parent.dataset.turnKey = group.key;
+    parent.dataset.preferredId = visibleRecords.at(-1)?.requestId ?? last.requestId;
+    parent.innerHTML = `
+      <div class="stream-head turn-group-head">
+        <span class="turn-group-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
+        <div class="stream-path" title="${escapeHtml(group.key)}"><span class="method">${
+          group.profile === "chatgpt-web-work" ? "WORK" : "CHAT"
+        }</span>Turn · ${escapeHtml(t("turnStreamsCount", String(visibleRecords.length)))}</div>
+        <time class="stream-when-start">${escapeHtml(formatTimeShort(first.startedAt))}</time>
+      </div>
+      <div class="stream-meta">
+        <span class="badge origin">${escapeHtml(group.profile === "chatgpt-web-work" ? "WORK TURN" : "CHAT TURN")}</span>
+        <span>${escapeHtml(transports.join(" + "))}</span>
+        <span>${escapeHtml(t("eventsCount", String(totalEvents)))}</span>
+        <span class="stream-meta-trail">
+          <span class="status ${anyStreaming ? "streaming" : last.streamStatus}"><i></i>${escapeHtml(
+            streamStatusShort(anyStreaming ? "streaming" : last.streamStatus),
+          )}</span>
+          ${
+            !anyStreaming && typeof last.endedAt === "number"
+              ? `<time class="stream-when-end">${escapeHtml(formatTimeShort(last.endedAt))}</time>`
+              : ""
+          }
+        </span>
+      </div>
+    `;
+    if (expanded) {
+      const children = document.createElement("ul");
+      children.className = "turn-group-children";
+      for (const child of visibleRecords) children.appendChild(renderStream(child, "stream-child"));
+      parent.appendChild(children);
     }
+    fragment.appendChild(parent);
   }
+  elList.replaceChildren(fragment);
 
   refreshStatusbarSummary();
 }

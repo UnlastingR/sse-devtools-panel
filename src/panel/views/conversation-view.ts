@@ -101,6 +101,23 @@ function restoreConversationScroll(
   pane.scrollTop = remembered;
 }
 
+function settleStructuredPaneScroll(
+  pane: HTMLElement,
+  previousScrollTop: number,
+  keepBottom: boolean,
+): void {
+  const apply = (): void => {
+    const maxScroll = Math.max(0, pane.scrollHeight - pane.clientHeight);
+    if (maxScroll <= 1) {
+      pane.scrollTop = 0;
+      return;
+    }
+    pane.scrollTop = keepBottom ? maxScroll : Math.min(previousScrollTop, maxScroll);
+  };
+  apply();
+  requestAnimationFrame(apply);
+}
+
 function disposeVirtualTextPane(): void {
   if (!activeVirtualPane) return;
   activeVirtualPane.root.removeEventListener("scroll", onVirtualScroll);
@@ -932,6 +949,7 @@ function mountFullConversation(
 export function renderConversation(
   record: StreamRecord | undefined,
   options: RenderConversationOptions,
+  mergedOverride?: AiConversation,
 ): void {
   if (!record) {
     elConversationPlaceholder.hidden = false;
@@ -957,11 +975,13 @@ export function renderConversation(
     rememberCurrentConversationScroll();
   }
 
-  const merged = syncConversationMergeSession(record.requestId, record.events, record.url, {
-    endedAtMs: record.endedAt,
-    streamStatus: record.streamStatus,
-    closeReason: record.closeReason,
-  });
+  const merged =
+    mergedOverride ??
+    syncConversationMergeSession(record.requestId, record.events, record.url, {
+      endedAtMs: record.endedAt,
+      streamStatus: record.streamStatus,
+      closeReason: record.closeReason,
+    });
   latestMerged = merged;
 
   const fp = buildConversationFingerprint(merged, conversationChannel);
@@ -1009,9 +1029,7 @@ export function renderConversation(
         const next = createToolsPane(merged, record.requestId);
         if (prev) prev.replaceWith(next);
         else existingShell.appendChild(next);
-        if (keepBottom) next.scrollTop = next.scrollHeight;
-        else
-          next.scrollTop = Math.min(scrollTop, Math.max(0, next.scrollHeight - next.clientHeight));
+        settleStructuredPaneScroll(next, scrollTop, keepBottom);
         lastToolsFingerprint = tf;
       }
       return;
@@ -1027,9 +1045,7 @@ export function renderConversation(
         const next = createReasoningPane(merged, record, options);
         if (prev) prev.replaceWith(next);
         else existingShell.appendChild(next);
-        if (keepBottom) next.scrollTop = next.scrollHeight;
-        else
-          next.scrollTop = Math.min(scrollTop, Math.max(0, next.scrollHeight - next.clientHeight));
+        settleStructuredPaneScroll(next, scrollTop, keepBottom);
         lastReasoningFingerprint = rf;
       }
       return;

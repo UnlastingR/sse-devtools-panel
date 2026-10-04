@@ -29,6 +29,8 @@ export const state = {
   drawerSearchQuery: "",
   streamsUrlFilterQuery: "",
   streamsTransportFilter: "all" as StreamTransport | "all",
+  /** Expanded ChatGPT logical turn groups in the sidebar. */
+  expandedTurnGroups: new Set<string>(),
   uiPaused: false,
   pendingListRefreshWhilePaused: false,
   pendingDetailRefreshWhilePaused: false,

@@ -684,6 +684,15 @@
       }
     }
   },
+  "turnStreamsCount": {
+    "message": "$COUNT$ 条子流",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
   "metaError": {
     "message": "错误：$MSG$",
     "placeholders": {

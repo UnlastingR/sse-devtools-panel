@@ -370,7 +370,7 @@ describe("ChatGPT reasoning timing", () => {
     expect(web?.durationKind).toBe("inferred");
   });
 
-  it("uses browser receive timestamps for Work messages with null create_time", () => {
+  it("uses browser receive timestamps as the primary Work clock", () => {
     const start = 1_000;
     const webCall = assistant(
       "work-view-call",
@@ -415,12 +415,121 @@ describe("ChatGPT reasoning timing", () => {
     ]);
 
     const web = findItem(result, (text) => text.includes("web.run · VIEW"));
-    expect(web?.elapsedSec).toBe(10);
+    expect(web?.elapsedSec).toBe(0);
     expect(web?.durationSec).toBe(4);
     expect(web?.durationKind).toBe("measured");
-    expect(result.channels.reasoning).toContain("+10.0s  工具 · web.run · VIEW");
+    expect(result.channels.reasoning).toContain("+0.0s  工具 · web.run · VIEW");
     expect(result.channels.tools[0]?.operation).toBe("VIEW");
     expect(JSON.parse(result.channels.tools[0]!.arguments).type).toBe("VIEW");
+  });
+
+  it("shows timing even when Work omits reasoning_start_time and message timestamps", () => {
+    const result = merged([
+      ev(
+        JSON.stringify({
+          o: "add",
+          v: {
+            message: {
+              id: "thoughts-no-server-time",
+              author: { role: "assistant" },
+              create_time: null,
+              update_time: null,
+              content: {
+                content_type: "thoughts",
+                thoughts: [{ summary: "Thinking", content: "", finished: false }],
+              },
+              metadata: { reasoning_status: "is_reasoning" },
+              recipient: "all",
+            },
+          },
+        }),
+        "delta",
+        10_000,
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/content/thoughts/0/summary",
+              o: "replace",
+              v: "检查工具可用性",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "replace",
+              v: "检查工具可用性",
+            },
+          ],
+        }),
+        "delta",
+        12_500,
+      ),
+    ]);
+
+    const stage = result.channels.reasoningStages?.find((item) => item.title === "检查工具可用性");
+    expect(stage?.elapsedSec).toBe(2.5);
+    expect(result.channels.reasoningDurationSec).toBe(2.5);
+  });
+
+  it("recovers DIL connector items as tools without an explicit tool message", () => {
+    const result = merged([
+      ev(
+        JSON.stringify({
+          o: "add",
+          v: {
+            message: {
+              id: "dil-thoughts",
+              author: { role: "assistant" },
+              create_time: null,
+              update_time: null,
+              content: {
+                content_type: "thoughts",
+                thoughts: [{ summary: "Thinking", content: "", finished: false }],
+              },
+              metadata: {
+                dil_v2_reasoning: {
+                  appData: { title: "Worked", current_status: "Thinking", items: [] },
+                },
+              },
+              recipient: "all",
+            },
+          },
+        }),
+        "delta",
+        20_000,
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/items",
+              o: "append",
+              v: [
+                {
+                  id: "exec-1:integration",
+                  type: "connector_call",
+                  label: "Using Devspace integration",
+                  connectorId: "asdk_app_devspace",
+                  toolName: "devspace.exec_command",
+                },
+              ],
+            },
+          ],
+        }),
+        "delta",
+        22_000,
+      ),
+    ]);
+
+    const tool = result.channels.tools.find((item) => item.id === "exec-1:integration");
+    expect(tool?.provider).toBe("Devspace");
+    expect(tool?.source).toBe("mcp");
+    expect(tool?.operation).toBe("exec_command");
+    expect(
+      findItem(result, (text) => text.includes("Devspace · APP · MCP · exec_command")),
+    ).toBeTruthy();
   });
 
   it("supports zero-length inferred intervals when two visible events share a timestamp", () => {

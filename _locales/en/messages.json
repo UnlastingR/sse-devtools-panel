@@ -684,6 +684,15 @@
       }
     }
   },
+  "turnStreamsCount": {
+    "message": "$COUNT$ streams",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
   "metaError": {
     "message": "Error: $MSG$",
     "placeholders": {

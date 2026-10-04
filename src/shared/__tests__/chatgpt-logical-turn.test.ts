@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  chatgptMotherTurnKey,
   chatgptTurnIdentity,
   chatgptTurnKey,
   combineChatgptTurnRecords,
+  resolveChatgptTurnGroup,
 } from "../chatgpt-logical-turn";
 import type { SseEvent, StreamRecord } from "../types";
 
@@ -21,7 +23,10 @@ function record(
   startedAt: number,
   events: SseEvent[],
   options: Partial<
-    Pick<StreamRecord, "url" | "transport" | "streamStatus" | "errorMessage" | "endedAt">
+    Pick<
+      StreamRecord,
+      "url" | "transport" | "streamStatus" | "errorMessage" | "endedAt" | "requestPayloadPreview"
+    >
   > = {},
 ): StreamRecord {
   return {
@@ -34,12 +39,110 @@ function record(
     streamStatus: options.streamStatus ?? "done",
     errorMessage: options.errorMessage,
     endedAt: options.endedAt,
+    requestPayloadPreview: options.requestPayloadPreview,
     raw: "",
     events,
   };
 }
 
 describe("ChatGPT logical turn grouping", () => {
+  it("groups Work websocket and approval continuations under one mother turn", () => {
+    const initial = record(
+      "ws",
+      1,
+      [
+        event({
+          type: "input_message",
+          conversation_id: "conv",
+          input_message: {
+            metadata: {
+              turn_exchange_id: "turn-a",
+              working_turn_id: "work",
+              is_temporal_turn: true,
+              stream_topic_id: "conversation-turn-work",
+              async_source: "server:conversation-turn-work:US",
+            },
+          },
+        }),
+      ],
+      {
+        url: "wss://ws.chatgpt.com/p21/ws/user/user-example#conversation-turn-work",
+        transport: "websocket",
+      },
+    );
+    const continuation = record("fetch-1", 2, [
+      event({
+        type: "input_message",
+        conversation_id: "conv",
+        input_message: {
+          metadata: { turn_exchange_id: "turn-b", working_turn_id: "work" },
+        },
+      }),
+    ]);
+    const continuation2 = record("fetch-2", 3, [
+      event({
+        type: "input_message",
+        conversation_id: "conv",
+        input_message: {
+          metadata: { turn_exchange_id: "turn-c", working_turn_id: "work" },
+        },
+      }),
+    ]);
+    const all = [initial, continuation, continuation2];
+    const group = resolveChatgptTurnGroup(continuation, all);
+    expect(group?.profile).toBe("chatgpt-web-work");
+    expect(group?.records.map((item) => item.requestId)).toEqual(["ws", "fetch-1", "fetch-2"]);
+    expect(chatgptMotherTurnKey(initial, all)).toBe(chatgptMotherTurnKey(continuation2, all));
+  });
+
+  it("keeps normal Chat follow-up turns as separate mother turns", () => {
+    const first = record("chat-a", 1, [
+      event({
+        type: "input_message",
+        conversation_id: "conv",
+        input_message: { metadata: { turn_exchange_id: "a", working_turn_id: "a" } },
+      }),
+    ]);
+    const followup = record("chat-b", 2, [
+      event({
+        type: "input_message",
+        conversation_id: "conv",
+        input_message: { metadata: { turn_exchange_id: "b", working_turn_id: "b" } },
+      }),
+    ]);
+    expect(chatgptMotherTurnKey(first, [first, followup])).not.toBe(
+      chatgptMotherTurnKey(followup, [first, followup]),
+    );
+  });
+
+  it("attaches upload processing streams by file_id", () => {
+    const conversation = record("conversation", 2, [
+      event({
+        type: "input_message",
+        conversation_id: "conv",
+        input_message: {
+          metadata: {
+            turn_exchange_id: "turn",
+            working_turn_id: "turn",
+            attachments: [{ id: "file_123" }],
+          },
+          content: {
+            content_type: "multimodal_text",
+            parts: [{ asset_pointer: "sediment://file_123" }, "hello"],
+          },
+        },
+      }),
+    ]);
+    const upload = record("upload", 1, [event({ type: "file.processing.completed" })], {
+      url: "https://chatgpt.com/backend-api/files/process_upload_stream",
+      transport: "fetch",
+      requestPayloadPreview: JSON.stringify({ file_id: "file_123", use_case: "agent" }),
+    });
+    const group = resolveChatgptTurnGroup(conversation, [upload, conversation]);
+    expect(group?.records.map((item) => item.requestId)).toEqual(["upload", "conversation"]);
+    expect(chatgptMotherTurnKey(upload, [upload, conversation])).toBe(group?.key);
+  });
+
   it("keeps Work approval continuations in separate turn generations", () => {
     const first = event({
       type: "input_message",
