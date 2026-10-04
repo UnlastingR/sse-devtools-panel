@@ -112,9 +112,11 @@ export function renderList(): void {
   const renderStream = (s: StreamRecord, extraClass = ""): HTMLLIElement => {
     const li = document.createElement("li");
     li.dataset.id = s.requestId;
+    const selectionKey = `stream:${s.requestId}`;
+    li.dataset.selectionKey = selectionKey;
     li.className = `stream${extraClass ? ` ${extraClass}` : ""}${
       s.requestId === state.selectedId ? " active" : ""
-    }`;
+    }${state.selectedSidebarKeys.has(selectionKey) ? " selected" : ""}`;
     const anomalyCount = scanStreamAnomalies(s).length;
     const specCount = getStreamSpecWarnings(s).length;
     const transportClass =
@@ -183,6 +185,7 @@ export function renderList(): void {
     const parent = document.createElement("li");
     const active = group.records.some((record) => record.requestId === state.selectedId);
     const expanded = state.expandedTurnGroups.has(group.key);
+    const selectionKey = `turn:${group.key}`;
     const first = group.records[0]!;
     const last = group.records.at(-1)!;
     const anyStreaming = group.records.some((record) => record.streamStatus === "streaming");
@@ -190,8 +193,11 @@ export function renderList(): void {
     const transports = Array.from(
       new Set(group.records.map((record) => transportLabel(record.transport))),
     );
-    parent.className = `stream turn-group${active ? " active" : ""}${expanded ? " is-expanded" : ""}`;
+    parent.className = `stream turn-group${active ? " active" : ""}${
+      state.selectedSidebarKeys.has(selectionKey) ? " selected" : ""
+    }${expanded ? " is-expanded" : ""}`;
     parent.dataset.turnKey = group.key;
+    parent.dataset.selectionKey = selectionKey;
     parent.dataset.preferredId = visibleRecords.at(-1)?.requestId ?? last.requestId;
     parent.innerHTML = `
       <div class="stream-head turn-group-head">

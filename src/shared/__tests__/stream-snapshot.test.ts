@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildStreamExportCsv, escapeCsvCell } from "../stream-snapshot";
+import { buildStreamExportCsv, buildStreamsExportCsv, escapeCsvCell } from "../stream-snapshot";
 
 function assert(cond: unknown, msg: string): asserts cond {
   expect(cond, msg).toBeTruthy();
@@ -39,5 +39,16 @@ describe("stream-snapshot", () => {
     assert(csv.includes("RequestId,URL,Method"), "header");
     assert(csv.includes('"hello,""world"""'), "escaped data");
     assert(csv.includes("req-1"), "request id");
+
+    const second = {
+      ...record,
+      requestId: "req-2",
+      url: "https://example.com/other",
+      events: record.events.map((event) => ({ ...event, index: event.index + 10 })),
+    };
+    const multi = buildStreamsExportCsv([{ record }, { record: second }]);
+    assert((multi.match(/RequestId,URL,Method/g) ?? []).length === 1, "single CSV header");
+    assert(multi.includes("req-1"), "first request id");
+    assert(multi.includes("req-2"), "second request id");
   });
 });

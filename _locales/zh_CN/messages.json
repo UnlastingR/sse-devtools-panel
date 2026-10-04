@@ -248,6 +248,12 @@
   "exportFixtureTitle": {
     "message": "将已解析事件重装为 text/event-stream，下载本地 mock/回放文件"
   },
+  "exportRaw": {
+    "message": "导出原始流"
+  },
+  "exportRawTitle": {
+    "message": "导出当前选择的物理流；母事件会展开全部子流，并逐流保留元数据与原始 Raw 内容"
+  },
   "exportFixtureEmpty": {
     "message": "没有可导出为 Fixture 的事件。"
   },
@@ -983,7 +989,7 @@
     "message": "导出"
   },
   "exportMenuTitle": {
-    "message": "导出当前选中的流"
+    "message": "导出当前选择（支持多选与 Turn 母事件）"
   },
   "moreMenu": {
     "message": "更多"
@@ -1026,6 +1032,15 @@
   },
   "toastExportedFixture": {
     "message": "已导出 Fixture"
+  },
+  "toastExportedRaw": {
+    "message": "已导出 $COUNT$ 条原始流",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
   },
   "toastArchiveSaved": {
     "message": "已保存到存档"

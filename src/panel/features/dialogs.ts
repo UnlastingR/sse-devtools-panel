@@ -36,6 +36,9 @@ export function jumpToStreamEvent(requestId: string, eventIndex: number, hooks: 
   const record = state.streams.get(requestId);
   if (!record) return;
   state.selectedId = requestId;
+  state.selectedSidebarKeys.clear();
+  state.selectedSidebarKeys.add(`stream:${requestId}`);
+  state.selectionAnchorKey = `stream:${requestId}`;
   state.selectedEventIndex = null;
   hooks.renderList();
   hooks.renderDetail();
@@ -209,6 +212,9 @@ export function showSpecWarningsDialog(hooks: DialogHooks): void {
           jumpToStreamEvent(item.record.requestId, warning.eventIndex, hooks);
         } else {
           state.selectedId = item.record.requestId;
+          state.selectedSidebarKeys.clear();
+          state.selectedSidebarKeys.add(`stream:${item.record.requestId}`);
+          state.selectionAnchorKey = `stream:${item.record.requestId}`;
           state.selectedEventIndex = null;
           hooks.renderList();
           hooks.renderDetail();

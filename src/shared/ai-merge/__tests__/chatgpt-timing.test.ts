@@ -99,6 +99,65 @@ function findItem(result: ReturnType<typeof merged>, predicate: (text: string) =
 }
 
 describe("ChatGPT reasoning timing", () => {
+  it("does not duplicate a DIL status as both stage title and identical summary", () => {
+    const result = merged([
+      ev(
+        JSON.stringify({
+          o: "add",
+          v: {
+            message: assistant(
+              "dil-stage",
+              null,
+              "all",
+              {
+                resolved_model_slug: "gpt-6-luna-wm",
+                working_turn_id: "work",
+                turn_exchange_id: "turn",
+                dil_v2_reasoning: {
+                  appData: { title: "Worked", current_status: "Thinking", items: [] },
+                },
+              },
+              {
+                content_type: "thoughts",
+                thoughts: [{ summary: "Thinking", content: "", finished: false }],
+              },
+              null,
+            ),
+          },
+          conversation_id: "conv",
+        }),
+        "delta",
+        10_000,
+      ),
+      ev(
+        JSON.stringify({
+          o: "patch",
+          v: [
+            {
+              p: "/message/content/thoughts/0/summary",
+              o: "replace",
+              v: "检查仓库状态",
+            },
+            {
+              p: "/message/metadata/dil_v2_reasoning/appData/current_status",
+              o: "replace",
+              v: "检查仓库状态",
+            },
+          ],
+        }),
+        "delta",
+        12_000,
+      ),
+    ]);
+
+    const stage = result.channels.reasoningStages?.find((item) => item.title === "检查仓库状态");
+    expect(stage).toBeTruthy();
+    expect(
+      stage?.items.some((item) => item.kind === "summary" && item.text === "检查仓库状态"),
+    ).toBe(false);
+    expect(result.channels.reasoning).not.toContain("摘要 · 检查仓库状态");
+  });
+
   it("stops total reasoning time at reasoning_recap before final text streaming", () => {
     const result = merged(
       [

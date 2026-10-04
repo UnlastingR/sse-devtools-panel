@@ -248,6 +248,12 @@
   "exportFixtureTitle": {
     "message": "Download a text/event-stream mock file rebuilt from parsed events"
   },
+  "exportRaw": {
+    "message": "Export Raw"
+  },
+  "exportRawTitle": {
+    "message": "Export selected physical streams with per-stream metadata and original raw payloads"
+  },
   "exportFixtureEmpty": {
     "message": "No events to export as fixture."
   },
@@ -983,7 +989,7 @@
     "message": "Export"
   },
   "exportMenuTitle": {
-    "message": "Export the selected stream"
+    "message": "Export the current selection"
   },
   "moreMenu": {
     "message": "More"
@@ -1026,6 +1032,15 @@
   },
   "toastExportedFixture": {
     "message": "Exported Fixture"
+  },
+  "toastExportedRaw": {
+    "message": "Exported raw data for $COUNT$ stream(s)",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
   },
   "toastArchiveSaved": {
     "message": "Saved to archives"

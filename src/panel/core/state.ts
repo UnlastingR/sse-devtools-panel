@@ -31,6 +31,10 @@ export const state = {
   streamsTransportFilter: "all" as StreamTransport | "all",
   /** Expanded ChatGPT logical turn groups in the sidebar. */
   expandedTurnGroups: new Set<string>(),
+  /** Explicit sidebar multi-selection. Keys are `stream:<requestId>` or `turn:<groupKey>`. */
+  selectedSidebarKeys: new Set<string>(),
+  /** Anchor used for Shift range selection. */
+  selectionAnchorKey: null as string | null,
   uiPaused: false,
   pendingListRefreshWhilePaused: false,
   pendingDetailRefreshWhilePaused: false,

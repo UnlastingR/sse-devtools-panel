@@ -310,8 +310,9 @@ function formatTimestampIso(ts: number): string {
  * Includes UTF-8 BOM for Excel. Optional `events` overrides which rows to export
  * (e.g. current Events search filter); defaults to all events on the record.
  */
-export function buildStreamExportCsv(record: StreamRecord, events?: SseEvent[]): string {
-  const rows = events ?? record.events;
+export function buildStreamsExportCsv(
+  items: ReadonlyArray<{ record: StreamRecord; events?: SseEvent[] }>,
+): string {
   const headers = [
     "RequestId",
     "URL",
@@ -328,24 +329,31 @@ export function buildStreamExportCsv(record: StreamRecord, events?: SseEvent[]):
     "ReceivedAt",
   ];
 
-  const lines = rows.map((ev) =>
-    [
-      escapeCsvCell(record.requestId),
-      escapeCsvCell(record.url),
-      escapeCsvCell(record.method),
-      escapeCsvCell(record.status),
-      escapeCsvCell(record.transport),
-      escapeCsvCell(record.streamKind),
-      escapeCsvCell(record.streamStatus),
-      escapeCsvCell(ev.index),
-      escapeCsvCell(ev.id),
-      escapeCsvCell(ev.event),
-      escapeCsvCell(ev.data),
-      escapeCsvCell(ev.retry),
-      escapeCsvCell(formatTimestampIso(ev.receivedAt)),
-    ].join(","),
-  );
+  const lines = items.flatMap(({ record, events }) => {
+    const rows = events ?? record.events;
+    return rows.map((ev) =>
+      [
+        escapeCsvCell(record.requestId),
+        escapeCsvCell(record.url),
+        escapeCsvCell(record.method),
+        escapeCsvCell(record.status),
+        escapeCsvCell(record.transport),
+        escapeCsvCell(record.streamKind),
+        escapeCsvCell(record.streamStatus),
+        escapeCsvCell(ev.index),
+        escapeCsvCell(ev.id),
+        escapeCsvCell(ev.event),
+        escapeCsvCell(ev.data),
+        escapeCsvCell(ev.retry),
+        escapeCsvCell(formatTimestampIso(ev.receivedAt)),
+      ].join(","),
+    );
+  });
 
   // BOM helps Excel open UTF-8 correctly
   return `\uFEFF${[headers.join(","), ...lines].join("\r\n")}\r\n`;
+}
+
+export function buildStreamExportCsv(record: StreamRecord, events?: SseEvent[]): string {
+  return buildStreamsExportCsv([{ record, events }]);
 }

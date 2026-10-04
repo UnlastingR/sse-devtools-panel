@@ -49,6 +49,7 @@ export const elStreamsTransportFilter = document.getElementById(
 export const elExportJson = document.getElementById("btn-export-json") as HTMLButtonElement;
 export const elExportCsv = document.getElementById("btn-export-csv") as HTMLButtonElement;
 export const elExportFixture = document.getElementById("btn-export-fixture") as HTMLButtonElement;
+export const elExportRaw = document.getElementById("btn-export-raw") as HTMLButtonElement;
 export const elImportJson = document.getElementById("btn-import-json") as HTMLButtonElement;
 export const elPauseUi = document.getElementById("btn-pause-ui") as HTMLButtonElement;
 export const elImportFile = document.getElementById("import-file") as HTMLInputElement;

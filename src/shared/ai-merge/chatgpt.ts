@@ -44,6 +44,14 @@ type DilToolEvent = {
   observedAt?: number;
 };
 
+type JitToolRequest = {
+  provider?: string;
+  source?: "mcp";
+  operation?: string;
+  path?: string;
+  arguments: string;
+};
+
 const CHATGPT_RICH_BLOCK_RE = /\uE200([A-Za-z0-9_:-]+)\uE202[\s\S]*?\uE201/g;
 const CHATGPT_RICH_BLOCK_TAIL_RE = /\uE200[A-Za-z0-9_:-]*\uE202[^\uE201]*$/g;
 
@@ -110,7 +118,55 @@ function dilToolIdentity(
     provider,
     kind: "app",
     source: event.connectorId?.startsWith("asdk_app_") ? "mcp" : undefined,
-    operation: operationParts.join(".") || undefined,
+    operation: normalizeToolOperation(operationParts.join(".")) || undefined,
+  };
+}
+
+function normalizeToolOperation(value: string): string {
+  const snake = value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s.-]+/g, "_")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+  const aliases: Record<string, string> = {
+    execute_command: "exec_command",
+    read_file: "read",
+    open_workspace: "open_workspace",
+  };
+  return aliases[snake] ?? snake;
+}
+
+function jitToolRequest(msg: ChatgptMessage): JitToolRequest | null {
+  const jit = isRecord(msg.metadata.jit_plugin_data) ? msg.metadata.jit_plugin_data : null;
+  const fromServer = jit && isRecord(jit.from_server) ? jit.from_server : null;
+  const body = fromServer && isRecord(fromServer.body) ? fromServer.body : null;
+  const params = body && isRecord(body.params) ? body.params : null;
+  if (!params) return null;
+
+  const path = typeof params.path === "string" ? params.path : undefined;
+  const rawOperation = path ? resourceOperation(path) : undefined;
+  const provider =
+    typeof body?.connector_name === "string" && body.connector_name.trim()
+      ? body.connector_name.trim()
+      : undefined;
+  const args = "args" in params ? params.args : {};
+  let payload = "{}";
+  try {
+    payload = JSON.stringify({ ...(path ? { path } : {}), args: args ?? {} });
+  } catch {
+    payload = "{}";
+  }
+  return {
+    provider,
+    source:
+      (typeof body?.connector_id === "string" && body.connector_id.startsWith("asdk_app_")) ||
+      isRecord(body?.codex_mcp_elicitation)
+        ? "mcp"
+        : undefined,
+    operation: rawOperation ? normalizeToolOperation(rawOperation) : undefined,
+    path,
+    arguments: payload,
   };
 }
 
@@ -647,12 +703,16 @@ function searchDetailsForTool(
 }
 
 function connectorPayloadForTool(tool: ChatgptMessage, state: ChatgptWebMergeState): string {
+  const ownJit = jitToolRequest(tool);
+  if (ownJit && ownJit.arguments !== "{}") return ownJit.arguments;
   const own = tool.metadata.connector_tool_payload;
   if (typeof own === "string" && own) return own;
 
   for (const id of state.order) {
     const msg = state.messages.get(id);
-    if (!msg || msg.id === tool.id || !belongsToLogicalTool(msg, tool, state)) continue;
+    if (!msg || msg.id === tool.id || !belongsToToolCall(msg, tool, state)) continue;
+    const jit = jitToolRequest(msg);
+    if (jit && jit.arguments !== "{}") return jit.arguments;
     if (msg.role !== "assistant" || msg.recipient !== "api_tool.call_tool") continue;
     const payload = msg.metadata.connector_tool_payload;
     if (typeof payload === "string" && payload) return payload;
@@ -677,7 +737,8 @@ function connectorPathIdentity(text: string): {
     const parts = parsed.path.split("/").filter(Boolean);
     if (parts.length < 2) return {};
     const provider = parts[0]?.trim() || undefined;
-    const operation = parts.at(-1)?.trim() || undefined;
+    const rawOperation = parts.at(-1)?.trim() || undefined;
+    const operation = rawOperation ? normalizeToolOperation(rawOperation) : undefined;
     return { provider, operation };
   } catch {
     return {};
@@ -958,6 +1019,15 @@ function toolIdentity(
   // assistant's api_tool.call_tool path is only a fallback: it cannot tell us
   // whether an app is backed by MCP or by a normal connector/plugin.
   for (const msg of candidates) {
+    const jit = jitToolRequest(msg);
+    if (jit && (jit.provider || jit.operation)) {
+      return {
+        provider: jit.provider,
+        kind: "app",
+        source: jit.source,
+        operation: jit.operation,
+      };
+    }
     const resource = isRecord(msg.metadata.invoked_resource) ? msg.metadata.invoked_resource : null;
     if (resource) {
       let provider =
@@ -982,7 +1052,9 @@ function toolIdentity(
           (resource.contains_mcp_source === true || connectorType?.toUpperCase() === "MCP")
             ? "mcp"
             : undefined,
-        operation: uri ? resourceOperation(uri) : undefined,
+        operation: uri
+          ? normalizeToolOperation(resourceOperation(uri) ?? "") || undefined
+          : undefined,
       };
     }
 
@@ -1390,14 +1462,15 @@ function reasoningStages(
   observation?: AiMergeObservation,
 ): AiReasoningStage[] {
   const stages: AiReasoningStage[] = [];
+  const transitionStageIds = new Set<string>();
   const seenTools = new Set<string>();
   const start = reasoningStartTime(state);
   let current: AiReasoningStage | undefined;
   let currentClosed = false;
 
-  const createStage = (title: string, msg: ChatgptMessage): AiReasoningStage => {
+  const createStage = (title: string, msg: ChatgptMessage, id = msg.id): AiReasoningStage => {
     const stage: AiReasoningStage = {
-      id: msg.id,
+      id,
       title,
       elapsedSec: reasoningElapsedSecWithFallback(msg, state, start),
       items: [],
@@ -1431,20 +1504,18 @@ function reasoningStages(
     if (!msg) continue;
 
     const transitions = state.reasoningTransitions.filter((item) => item.messageId === msg.id);
-    for (const transition of transitions) {
+    transitions.forEach((transition, transitionIndex) => {
       const elapsedSec =
         start != null && transition.observedAt != null
           ? Math.max(0, transition.observedAt - start)
           : reasoningElapsedSecWithFallback(msg, state, start);
-      const stage = stageFor(msg, transition.text, false);
+      const stage =
+        current?.title === transition.text && !currentClosed
+          ? current
+          : createStage(transition.text, msg, `${msg.id}:transition:${transitionIndex}`);
       stage.elapsedSec = elapsedSec;
-      stage.items.push({
-        kind: "summary",
-        text: transition.text,
-        elapsedSec,
-        sourceMessageId: msg.id,
-      });
-    }
+      transitionStageIds.add(stage.id);
+    });
 
     for (const toolEvent of state.dilToolEvents.filter((item) => item.messageId === msg.id)) {
       const elapsedSec =
@@ -1610,7 +1681,9 @@ function reasoningStages(
 
   // A reasoning_title can also be emitted on bookkeeping/result messages that
   // have no user-visible detail. Do not render those as fake-expandable cards.
-  const visibleStages = stages.filter((stage) => stage.items.length > 0);
+  const visibleStages = stages.filter(
+    (stage) => stage.items.length > 0 || transitionStageIds.has(stage.id),
+  );
   const orderIndex = new Map(state.order.map((id, index) => [id, index]));
   const activeItems = visibleStages
     .flatMap((stage) => stage.items)
@@ -1779,6 +1852,55 @@ function toolCalls(state: ChatgptWebMergeState): AiToolCall[] {
         arguments: widget.arguments,
       });
     }
+  }
+
+  // Work approval/elicitation messages can carry the concrete connector
+  // invocation even when the DIL item only exposes a tool name. Promote those
+  // params into the tool card so commands, paths and arguments remain visible.
+  const enriched = new Set<number>();
+  for (const id of state.order) {
+    const msg = state.messages.get(id);
+    if (!msg) continue;
+    const jit = jitToolRequest(msg);
+    if (!jit) continue;
+    const providerKey = (jit.provider ?? "").toLowerCase();
+    const operationKey = normalizeToolOperation(jit.operation ?? "");
+    let matchIndex = out.findIndex((tool, index) => {
+      if (enriched.has(index)) return false;
+      const toolProvider = (tool.provider ?? tool.name ?? "").toLowerCase();
+      const toolOperation = normalizeToolOperation(tool.operation ?? "");
+      return (
+        Boolean(providerKey) &&
+        providerKey === toolProvider &&
+        (!operationKey || !toolOperation || operationKey === toolOperation)
+      );
+    });
+    if (matchIndex >= 0) {
+      const existing = out[matchIndex]!;
+      out[matchIndex] = {
+        ...existing,
+        provider: existing.provider ?? jit.provider,
+        kind: existing.kind ?? "app",
+        source: existing.source ?? jit.source,
+        operation: existing.operation ?? jit.operation,
+        arguments:
+          existing.arguments && existing.arguments !== "{}" ? existing.arguments : jit.arguments,
+      };
+      enriched.add(matchIndex);
+      continue;
+    }
+    matchIndex = out.length;
+    out.push({
+      index: matchIndex,
+      id: msg.id,
+      name: msg.authorName ?? "api_tool.call_tool",
+      provider: jit.provider,
+      kind: "app",
+      source: jit.source,
+      operation: jit.operation,
+      arguments: jit.arguments,
+    });
+    enriched.add(matchIndex);
   }
 
   const explicitCounts = new Map<string, number>();

@@ -30,7 +30,7 @@ import {
 } from "../shared/theme";
 import { stampReceivedAt } from "../shared/event-stamp";
 import { latestEventIdFromEvents, streamHasExplicitCompletion } from "../shared/stream-close";
-import { chatgptMotherTurnKey } from "../shared/chatgpt-logical-turn";
+import { chatgptMotherTurnKey, resolveChatgptTurnGroups } from "../shared/chatgpt-logical-turn";
 import { SseParser, type ParsedSseEvent } from "../shared/sse-parser";
 import { NdjsonParser } from "../shared/ndjson-parser";
 import { ConnectJsonParser } from "../shared/connect-json-parser";
@@ -54,6 +54,7 @@ import {
   elExportJson,
   elExportCsv,
   elExportFixture,
+  elExportRaw,
   elImportJson,
   elPauseUi,
   elImportFile,
@@ -121,6 +122,7 @@ import {
   exportSelectedStreamCsv,
   exportSelectedStreamFixture,
   exportSelectedStreamJson,
+  exportSelectedRawStreams,
   importStreamFromFile,
   saveSelectedStreamArchive,
   type ExportImportHooks,
@@ -298,6 +300,10 @@ function onStart(payload: StreamStartPayload): void {
 
   if (!state.selectedId) {
     state.selectedId = payload.requestId;
+    if (state.selectedSidebarKeys.size === 0) {
+      state.selectedSidebarKeys.add(`stream:${payload.requestId}`);
+      state.selectionAnchorKey = `stream:${payload.requestId}`;
+    }
   }
 
   if (state.uiPaused) {
@@ -316,14 +322,22 @@ function onDiscard(requestId: string): void {
   const existing = state.streams.get(requestId);
   if (!existing) return;
   state.streams.delete(requestId);
+  state.selectedSidebarKeys.delete(`stream:${requestId}`);
   state.parsers.delete(requestId);
   discardConversationMergeSession(requestId);
   invalidateStreamAnomalyCache(requestId);
   if (state.selectedId === requestId) {
     state.selectedId = null;
     state.selectedEventIndex = null;
-    const next = Array.from(state.streams.keys())[0] ?? null;
+    const fallbackSelected = Array.from(state.selectedSidebarKeys)
+      .map(primaryStreamIdForSidebarKey)
+      .find((id): id is string => Boolean(id));
+    const next = fallbackSelected ?? Array.from(state.streams.keys())[0] ?? null;
     state.selectedId = next;
+    if (state.selectedSidebarKeys.size === 0 && next) {
+      state.selectedSidebarKeys.add(`stream:${next}`);
+      state.selectionAnchorKey = `stream:${next}`;
+    }
   }
   if (state.uiPaused) {
     state.pendingListRefreshWhilePaused = true;
@@ -377,6 +391,64 @@ function selectionSharesChatgptTurn(requestId: string): boolean {
   return Boolean(
     selectedKey && selectedKey === chatgptMotherTurnKey(changed, state.streams.values()),
   );
+}
+
+function primaryStreamIdForSidebarKey(key: string): string | null {
+  if (key.startsWith("stream:")) {
+    const id = key.slice("stream:".length);
+    return state.streams.has(id) ? id : null;
+  }
+  if (key.startsWith("turn:")) {
+    const turnKey = key.slice("turn:".length);
+    const group = resolveChatgptTurnGroups(state.streams.values()).find(
+      (item) => item.key === turnKey,
+    );
+    return group?.records.at(-1)?.requestId ?? null;
+  }
+  return null;
+}
+
+function sidebarSelectionOrder(): string[] {
+  return Array.from(elList.querySelectorAll<HTMLElement>("[data-selection-key]"))
+    .map((node) => node.dataset.selectionKey)
+    .filter((key): key is string => Boolean(key));
+}
+
+function applySidebarSelection(key: string, event: PointerEvent): void {
+  const additive = event.ctrlKey || event.metaKey;
+  if (event.shiftKey && state.selectionAnchorKey) {
+    const order = sidebarSelectionOrder();
+    const from = order.indexOf(state.selectionAnchorKey);
+    const to = order.indexOf(key);
+    if (from >= 0 && to >= 0) {
+      if (!additive) state.selectedSidebarKeys.clear();
+      const [start, end] = from <= to ? [from, to] : [to, from];
+      for (let i = start; i <= end; i += 1) state.selectedSidebarKeys.add(order[i]!);
+    } else {
+      state.selectedSidebarKeys.clear();
+      state.selectedSidebarKeys.add(key);
+    }
+  } else if (additive) {
+    if (state.selectedSidebarKeys.has(key)) state.selectedSidebarKeys.delete(key);
+    else state.selectedSidebarKeys.add(key);
+    state.selectionAnchorKey = key;
+  } else {
+    state.selectedSidebarKeys.clear();
+    state.selectedSidebarKeys.add(key);
+    state.selectionAnchorKey = key;
+  }
+
+  if (!event.shiftKey && !additive) state.selectionAnchorKey = key;
+
+  if (state.selectedSidebarKeys.has(key)) {
+    state.selectedId = primaryStreamIdForSidebarKey(key);
+  } else if (state.selectedId && !state.selectedSidebarKeys.has(`stream:${state.selectedId}`)) {
+    const fallback = Array.from(state.selectedSidebarKeys)
+      .map(primaryStreamIdForSidebarKey)
+      .find((id): id is string => Boolean(id));
+    state.selectedId = fallback ?? null;
+  }
+  state.selectedEventIndex = null;
 }
 
 function onEnd(payload: StreamEndPayload): void {
@@ -804,23 +876,18 @@ function setupActions(): void {
     const li = (e.target as HTMLElement | null)?.closest("li.stream, li.stream-item");
     if (!(li instanceof HTMLLIElement) || !elList.contains(li)) return;
     const turnKey = li.dataset.turnKey;
-    if (turnKey && !li.dataset.id) {
+    const target = e.target as HTMLElement | null;
+    if (turnKey && !li.dataset.id && target?.closest(".turn-group-caret")) {
       e.preventDefault();
       if (state.expandedTurnGroups.has(turnKey)) state.expandedTurnGroups.delete(turnKey);
       else state.expandedTurnGroups.add(turnKey);
-      const preferredId = li.dataset.preferredId;
-      if (preferredId && state.streams.has(preferredId) && state.selectedId !== preferredId) {
-        state.selectedId = preferredId;
-        state.selectedEventIndex = null;
-        renderDetail();
-      }
       renderList();
       return;
     }
-    const id = li.dataset.id;
-    if (!id || !state.streams.has(id) || id === state.selectedId) return;
-    state.selectedId = id;
-    state.selectedEventIndex = null;
+    const selectionKey = li.dataset.selectionKey;
+    if (!selectionKey) return;
+    e.preventDefault();
+    applySidebarSelection(selectionKey, e);
     renderList();
     renderDetail();
   });
@@ -838,6 +905,8 @@ function setupActions(): void {
     state.streamsUrlFilterQuery = "";
     state.streamsTransportFilter = "all";
     state.expandedTurnGroups.clear();
+    state.selectedSidebarKeys.clear();
+    state.selectionAnchorKey = null;
     state.pendingListRefreshWhilePaused = false;
     state.pendingDetailRefreshWhilePaused = false;
     elStreamsUrlFilter.value = "";
@@ -891,6 +960,10 @@ function setupActions(): void {
 
   elExportFixture.addEventListener("click", () => {
     exportSelectedStreamFixture();
+  });
+
+  elExportRaw.addEventListener("click", () => {
+    exportSelectedRawStreams();
   });
 
   elImportJson.addEventListener("click", () => {

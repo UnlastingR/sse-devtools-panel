@@ -1878,6 +1878,101 @@ describe("ai-merge", () => {
     }
 
     {
+      const jitMcp = [
+        ev("v1", "delta_encoding"),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "jit-thoughts",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "thoughts",
+                  thoughts: [{ summary: "Thinking", content: "", finished: false }],
+                },
+                metadata: {
+                  resolved_model_slug: "gpt-6-luna-wm",
+                  working_turn_id: "work",
+                  turn_exchange_id: "exchange",
+                  dil_v2_reasoning: { appData: { title: "Worked", items: [] } },
+                },
+                recipient: "all",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "patch",
+            v: [
+              {
+                p: "/message/metadata/dil_v2_reasoning/appData/items",
+                o: "append",
+                v: [
+                  {
+                    id: "exec-jit:integration",
+                    label: "Using Devspace integration",
+                    connectorId: "asdk_app_devspace",
+                    toolName: "devspace.exec_command",
+                  },
+                ],
+              },
+            ],
+          }),
+          "delta",
+        ),
+        ev(
+          JSON.stringify({
+            o: "add",
+            v: {
+              message: {
+                id: "jit-approval",
+                author: { role: "tool", name: "api_tool.call_tool" },
+                content: { content_type: "text", parts: [""] },
+                metadata: {
+                  jit_plugin_data: {
+                    from_server: {
+                      type: "confirm_action",
+                      body: {
+                        connector_name: "Devspace",
+                        connector_id: "asdk_app_devspace",
+                        params: {
+                          path: "/asdk_app_devspace/link_x/Execute_command",
+                          args: {
+                            cmd: "echo hello",
+                            workingDirectory: "/root/codex",
+                            workspaceId: "ws_test",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                recipient: "all",
+              },
+            },
+            conversation_id: "conv",
+          }),
+          "delta",
+        ),
+      ];
+      const t = mergeAiConversation(jitMcp, "https://chatgpt.com/backend-api/f/conversation");
+      const devspace = t.channels.tools.filter((tool) => tool.provider === "Devspace");
+      assert(devspace.length === 1, `JIT Devspace tools: ${devspace.length}`);
+      assert(devspace[0]?.operation === "exec_command", "JIT operation normalized");
+      const args = JSON.parse(devspace[0]!.arguments) as {
+        path?: string;
+        args?: { cmd?: string; workingDirectory?: string; workspaceId?: string };
+      };
+      assert(args.args?.cmd === "echo hello", "JIT command restored");
+      assert(args.args?.workingDirectory === "/root/codex", "JIT working directory restored");
+      assert(args.args?.workspaceId === "ws_test", "JIT workspace restored");
+    }
+
+    {
       const events = [
         ev(
           JSON.stringify({

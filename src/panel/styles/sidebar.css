@@ -135,6 +135,12 @@ select {
   border-color: var(--stream-active-border);
 }
 
+.stream-item.selected:not(.active),
+.stream.selected:not(.active) {
+  background: var(--surface-hover);
+  border-color: var(--stream-active-border);
+}
+
 .stream-item.active::before,
 .stream.active::before {
   content: "";
