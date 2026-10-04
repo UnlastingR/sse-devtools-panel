@@ -125,8 +125,23 @@ function chatgptMessageMetadata(value: unknown): Record<string, unknown> | null 
   return isRecord(value.metadata) ? value.metadata : null;
 }
 
+function isChatgptWorkModelSlug(value: unknown): boolean {
+  return typeof value === "string" && /-wm(?:$|[-_.])/i.test(value.trim());
+}
+
+function hasChatgptWorkModelMetadata(metadata: Record<string, unknown> | null): boolean {
+  if (!metadata) return false;
+  return [
+    metadata.model_slug,
+    metadata.resolved_model_slug,
+    metadata.requested_model,
+    metadata.backend_model,
+  ].some(isChatgptWorkModelSlug);
+}
+
 function isChatgptWorkMetadata(metadata: Record<string, unknown> | null): boolean {
   if (!metadata) return false;
+  if (hasChatgptWorkModelMetadata(metadata)) return true;
   if (metadata.is_temporal_turn === true) return true;
   if (
     typeof metadata.async_source === "string" &&
@@ -142,6 +157,7 @@ function isChatgptWorkSignal(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.type === "server_ste_metadata" && isRecord(value.metadata)) {
     const metadata = value.metadata;
+    if (hasChatgptWorkModelMetadata(metadata)) return true;
     if (metadata.requested_model_experience === "work" || metadata.product_experience === "work") {
       return true;
     }

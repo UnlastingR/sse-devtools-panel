@@ -1660,6 +1660,33 @@ describe("ai-merge", () => {
       );
       assert(normalChat.profile === "chatgpt-web-chat", "normal ChatGPT SSE uses chat profile");
 
+      const workByModel = detectAiProfile(
+        [
+          ev("v1", "delta_encoding"),
+          ev(
+            JSON.stringify({
+              o: "add",
+              v: {
+                message: {
+                  id: "work-model-message",
+                  author: { role: "assistant" },
+                  content: { content_type: "text", parts: [""] },
+                  metadata: {
+                    working_turn_id: "work-turn",
+                    resolved_model_slug: "gpt-6-luna-wm",
+                  },
+                  recipient: "all",
+                },
+              },
+              conversation_id: "conv",
+            }),
+            "delta",
+          ),
+        ],
+        "https://chatgpt.com/backend-api/f/conversation",
+      );
+      assert(workByModel.profile === "chatgpt-web-work", "*-wm model metadata implies Work");
+
       const work = detectAiProfile(
         [
           ev("v1", "delta_encoding"),
