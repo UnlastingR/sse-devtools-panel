@@ -180,19 +180,57 @@ const dialogHooks: DialogHooks = {
   addStaticStream: (record) => addStaticStream(record, exportHooks),
 };
 
+let relayPort: chrome.runtime.Port | null = null;
+let relayReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let relayHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopRelayHeartbeat(): void {
+  if (relayHeartbeatTimer === null) return;
+  clearInterval(relayHeartbeatTimer);
+  relayHeartbeatTimer = null;
+}
+
+function scheduleRelayReconnect(): void {
+  if (relayReconnectTimer !== null) return;
+  relayReconnectTimer = setTimeout(() => {
+    relayReconnectTimer = null;
+    connect();
+  }, 500);
+}
+
 function connect(): void {
+  if (relayPort) return;
   const port = chrome.runtime.connect({ name: PANEL_PORT });
+  relayPort = port;
+  const tabId = chrome.devtools.inspectedWindow.tabId;
   port.postMessage({
     type: "init",
-    tabId: chrome.devtools.inspectedWindow.tabId,
+    tabId,
   });
+
+  stopRelayHeartbeat();
+  relayHeartbeatTimer = setInterval(() => {
+    if (relayPort !== port) return;
+    try {
+      port.postMessage({ type: "heartbeat", tabId });
+    } catch {
+      try {
+        port.disconnect();
+      } catch {
+        // already disconnected
+      }
+    }
+  }, 10_000);
 
   port.onMessage.addListener((msg: RelayMessage) => {
     handleRelay(msg);
   });
 
   port.onDisconnect.addListener(() => {
-    setTimeout(connect, 500);
+    if (relayPort !== port) return;
+    relayPort = null;
+    stopRelayHeartbeat();
+    scheduleRelayReconnect();
   });
 }
 
