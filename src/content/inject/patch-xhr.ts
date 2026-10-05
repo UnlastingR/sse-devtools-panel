@@ -34,19 +34,25 @@ export function patchXhr(
 
     const originalOpen = xhr.open.bind(xhr);
     xhr.open = ((...args: Parameters<XMLHttpRequest["open"]>) => {
+      const result = originalOpen(...args);
       method = String(args[0] ?? "GET").toUpperCase();
       url = String(args[1] ?? "");
-      return originalOpen(...args);
+      return result;
     }) as XMLHttpRequest["open"];
 
     const originalSetRequestHeader = xhr.setRequestHeader.bind(xhr);
     xhr.setRequestHeader = ((name: string, value: string) => {
+      const result = originalSetRequestHeader(name, value);
       requestHeaders[name.toLowerCase()] = redactHeaderValue(name, String(value));
-      return originalSetRequestHeader(name, value);
+      return result;
     }) as XMLHttpRequest["setRequestHeader"];
 
     const originalSend = xhr.send.bind(xhr);
     xhr.send = ((body?: Document | XMLHttpRequestBodyInit | null) => {
+      const sentAt = Date.now();
+      const result = originalSend(body);
+      if (!active) return result;
+
       if (body == null) {
         requestPayloadPreview = undefined;
         requestPayloadTruncated = undefined;
@@ -90,7 +96,7 @@ export function patchXhr(
       // Connect+JSON is binary — XHR cannot capture it; do not flash a pending row.
       if (pendingKind && pendingKind !== "connect-json") {
         requestId = nextId();
-        startedAt = Date.now();
+        startedAt = sentAt;
         announced = true;
         postStart({
           requestId,
@@ -106,7 +112,7 @@ export function patchXhr(
         });
       }
 
-      return originalSend(body);
+      return result;
     }) as XMLHttpRequest["send"];
 
     const tryStart = (): void => {
