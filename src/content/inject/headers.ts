@@ -171,3 +171,63 @@ export async function collectFetchRequestMeta(
 
   return { headers: requestHeaders, payloadPreview, payloadTruncated };
 }
+
+/**
+ * Synchronous, non-invasive metadata collection for fetch interception.
+ *
+ * Do not clone/read a Request body here: doing so before the native fetch call can
+ * perturb request timing and stream backpressure. Request bodies supplied via
+ * `init.body` are previewed only when they can be inspected synchronously.
+ */
+export function collectFetchRequestMetaSync(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): {
+  headers?: Record<string, string>;
+  payloadPreview?: string;
+  payloadTruncated?: boolean;
+} {
+  let requestHeaders: Record<string, string> | undefined;
+  let payloadPreview: string | undefined;
+  let payloadTruncated: boolean | undefined;
+
+  if (typeof input !== "string" && !(input instanceof URL) && input instanceof Request) {
+    requestHeaders = mergeHeaderMaps(requestHeaders, normalizeHeaders(input.headers));
+  }
+
+  requestHeaders = mergeHeaderMaps(requestHeaders, normalizeHeaders(init?.headers));
+
+  const body = init?.body;
+  if (typeof body === "string") {
+    const clipped = clipPayloadText(body);
+    payloadPreview = clipped.preview;
+    payloadTruncated = clipped.truncated;
+  } else if (body instanceof URLSearchParams) {
+    const clipped = clipPayloadText(body.toString());
+    payloadPreview = clipped.preview;
+    payloadTruncated = clipped.truncated;
+  } else if (body instanceof FormData) {
+    const fields: string[] = [];
+    body.forEach((value, key) => {
+      if (typeof value === "string") fields.push(`${key}=${value}`);
+      else fields.push(`${key}=[blob:${value.type || "application/octet-stream"}]`);
+    });
+    const clipped = clipPayloadText(fields.join("&"));
+    payloadPreview = clipped.preview;
+    payloadTruncated = clipped.truncated;
+  } else if (body instanceof Blob) {
+    payloadPreview = `[blob:${body.type || "application/octet-stream"}]`;
+    payloadTruncated = false;
+  } else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    payloadPreview = `[binary:${body.byteLength} bytes]`;
+    payloadTruncated = false;
+  } else if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) {
+    payloadPreview = "[stream body]";
+    payloadTruncated = false;
+  } else if (body != null) {
+    payloadPreview = "[payload]";
+    payloadTruncated = false;
+  }
+
+  return { headers: requestHeaders, payloadPreview, payloadTruncated };
+}

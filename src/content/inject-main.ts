@@ -1,4 +1,9 @@
-import { MESSAGE_SOURCE, type PageToExtensionMessage } from "../shared/types";
+import {
+  CONTROL_SOURCE,
+  MESSAGE_SOURCE,
+  type CaptureControlMessage,
+  type PageToExtensionMessage,
+} from "../shared/types";
 import { patchEventSource } from "./inject/patch-eventsource";
 import { patchFetch } from "./inject/patch-fetch";
 import { patchWebSocket } from "./inject/patch-websocket";
@@ -46,8 +51,29 @@ function install(): void {
   const postDiscard: PostDiscard = (requestId) =>
     post({ source: MESSAGE_SOURCE, type: "stream-discard", payload: { requestId } });
 
-  patchFetch(nextId, postStart, postChunk, postEnd, postError, postDiscard);
-  patchEventSource(nextId, postStart, postChunk, postEnd, postError, postReconnect);
-  patchXhr(nextId, postStart, postChunk, postEnd, postError, postDiscard);
-  patchWebSocket(nextId, postStart, postChunk, postEnd, postError);
+  let cleanups: Array<() => void> | null = null;
+
+  const setCaptureEnabled = (enabled: boolean): void => {
+    if (enabled) {
+      if (cleanups) return;
+      cleanups = [
+        patchFetch(nextId, postStart, postChunk, postEnd, postError, postDiscard),
+        patchEventSource(nextId, postStart, postChunk, postEnd, postError, postReconnect),
+        patchXhr(nextId, postStart, postChunk, postEnd, postError, postDiscard),
+        patchWebSocket(nextId, postStart, postChunk, postEnd, postError),
+      ];
+      return;
+    }
+
+    if (!cleanups) return;
+    for (const cleanup of [...cleanups].reverse()) cleanup();
+    cleanups = null;
+  };
+
+  window.addEventListener("message", (event: MessageEvent) => {
+    if (event.source !== window || !event.data || typeof event.data !== "object") return;
+    const message = event.data as CaptureControlMessage;
+    if (message.source !== CONTROL_SOURCE || message.type !== "capture-control") return;
+    setCaptureEnabled(Boolean(message.payload?.enabled));
+  });
 }

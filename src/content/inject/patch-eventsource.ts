@@ -24,15 +24,11 @@ export function patchEventSource(
   postEnd: PostEnd,
   postError: PostError,
   postReconnect: PostReconnect,
-): void {
+): () => void {
   const OriginalEventSource = window.EventSource;
+  let active = true;
 
-  function PatchedEventSource(
-    this: EventSource,
-    url: string | URL,
-    eventSourceInitDict?: EventSourceInit,
-  ): EventSource {
-    const instance = new OriginalEventSource(url, eventSourceInitDict);
+  function instrumentEventSource(instance: EventSource, url: string | URL): EventSource {
     const requestId = nextId();
     const href = typeof url === "string" ? url : url.href;
     let ended = false;
@@ -40,17 +36,20 @@ export function patchEventSource(
     let reconnectCount = 0;
     let lastEventId = "";
 
-    postStart({
-      requestId,
-      url: href,
-      method: "GET",
-      contentType: "text/event-stream",
-      transport: "eventsource",
-      streamKind: "sse",
-      startedAt: Date.now(),
-    });
+    if (active) {
+      postStart({
+        requestId,
+        url: href,
+        method: "GET",
+        contentType: "text/event-stream",
+        transport: "eventsource",
+        streamKind: "sse",
+        startedAt: Date.now(),
+      });
+    }
 
     const finish = (mode: "end" | "error", closeReason: StreamCloseReason, message?: string) => {
+      if (!active) return;
       if (ended) return;
       ended = true;
       const endedAt = Date.now();
@@ -72,6 +71,7 @@ export function patchEventSource(
     };
 
     const onMessage = (ev: Event) => {
+      if (!active) return;
       const me = ev as MessageEvent;
       const typeName = me.type && me.type !== "message" ? me.type : "message";
       const data = typeof me.data === "string" ? me.data : String(me.data ?? "");
@@ -85,6 +85,7 @@ export function patchEventSource(
     const originalAdd = instance.addEventListener.bind(instance);
 
     const trackType = (type: string): void => {
+      if (!active) return;
       if (!type || type === "error" || type === "open") return;
       if (trackedTypes.has(type)) return;
       trackedTypes.add(type);
@@ -103,6 +104,7 @@ export function patchEventSource(
     }) as typeof instance.addEventListener;
 
     instance.addEventListener("error", () => {
+      if (!active) return;
       if (ended) return;
       if (instance.readyState === OriginalEventSource.CLOSED) {
         if (clientClosed) {
@@ -126,7 +128,7 @@ export function patchEventSource(
     instance.close = (): void => {
       clientClosed = true;
       originalClose();
-      finish("error", "abort", "EventSource closed by client");
+      if (active) finish("error", "abort", "EventSource closed by client");
     };
 
     // Legacy / convenience handlers: `es.onping = fn` (in addition to addEventListener).
@@ -141,12 +143,18 @@ export function patchEventSource(
     });
   }
 
-  PatchedEventSource.prototype = OriginalEventSource.prototype;
-  Object.defineProperty(PatchedEventSource, "CONNECTING", {
-    value: OriginalEventSource.CONNECTING,
+  const PatchedEventSource = new Proxy(OriginalEventSource, {
+    construct(target, args, newTarget) {
+      const instance = Reflect.construct(target, args, newTarget) as EventSource;
+      return instrumentEventSource(instance, args[0] as string | URL);
+    },
   });
-  Object.defineProperty(PatchedEventSource, "OPEN", { value: OriginalEventSource.OPEN });
-  Object.defineProperty(PatchedEventSource, "CLOSED", { value: OriginalEventSource.CLOSED });
 
-  window.EventSource = PatchedEventSource as unknown as typeof EventSource;
+  window.EventSource = PatchedEventSource;
+  return () => {
+    active = false;
+    if (window.EventSource === PatchedEventSource) {
+      window.EventSource = OriginalEventSource;
+    }
+  };
 }

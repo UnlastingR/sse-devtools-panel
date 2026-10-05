@@ -15,11 +15,11 @@ export function patchXhr(
   postEnd: PostEnd,
   postError: PostError,
   postDiscard: PostDiscard,
-): void {
+): () => void {
   const OriginalXHR = window.XMLHttpRequest;
+  let active = true;
 
-  function PatchedXHR(this: XMLHttpRequest): XMLHttpRequest {
-    const xhr = new OriginalXHR();
+  function instrumentXhr(xhr: XMLHttpRequest): XMLHttpRequest {
     let method = "GET";
     let url = "";
     const requestHeaders: Record<string, string> = {};
@@ -34,19 +34,25 @@ export function patchXhr(
 
     const originalOpen = xhr.open.bind(xhr);
     xhr.open = ((...args: Parameters<XMLHttpRequest["open"]>) => {
+      const result = originalOpen(...args);
       method = String(args[0] ?? "GET").toUpperCase();
       url = String(args[1] ?? "");
-      return originalOpen(...args);
+      return result;
     }) as XMLHttpRequest["open"];
 
     const originalSetRequestHeader = xhr.setRequestHeader.bind(xhr);
     xhr.setRequestHeader = ((name: string, value: string) => {
+      const result = originalSetRequestHeader(name, value);
       requestHeaders[name.toLowerCase()] = redactHeaderValue(name, String(value));
-      return originalSetRequestHeader(name, value);
+      return result;
     }) as XMLHttpRequest["setRequestHeader"];
 
     const originalSend = xhr.send.bind(xhr);
     xhr.send = ((body?: Document | XMLHttpRequestBodyInit | null) => {
+      const sentAt = Date.now();
+      const result = originalSend(body);
+      if (!active) return result;
+
       if (body == null) {
         requestPayloadPreview = undefined;
         requestPayloadTruncated = undefined;
@@ -90,7 +96,7 @@ export function patchXhr(
       // Connect+JSON is binary — XHR cannot capture it; do not flash a pending row.
       if (pendingKind && pendingKind !== "connect-json") {
         requestId = nextId();
-        startedAt = Date.now();
+        startedAt = sentAt;
         announced = true;
         postStart({
           requestId,
@@ -106,10 +112,11 @@ export function patchXhr(
         });
       }
 
-      return originalSend(body);
+      return result;
     }) as XMLHttpRequest["send"];
 
     const tryStart = (): void => {
+      if (!active) return;
       if (captured || finished) return;
       if (xhr.readyState < OriginalXHR.HEADERS_RECEIVED) return;
 
@@ -174,6 +181,7 @@ export function patchXhr(
     };
 
     const emitDelta = (): void => {
+      if (!active) return;
       if (!captured || !requestId || finished) return;
       // responseText is only available for default / text responseType
       if (xhr.responseType && xhr.responseType !== "text") {
@@ -194,6 +202,7 @@ export function patchXhr(
     };
 
     const finishOk = (): void => {
+      if (!active) return;
       if (!captured || !requestId || finished) return;
       finished = true;
       emitDelta();
@@ -204,6 +213,7 @@ export function patchXhr(
       message: string,
       closeReason: Extract<StreamCloseReason, "abort" | "error" | "http_error">,
     ): void => {
+      if (!active) return;
       if (!captured || !requestId || finished) return;
       finished = true;
       emitDelta();
@@ -240,14 +250,18 @@ export function patchXhr(
     return xhr;
   }
 
-  PatchedXHR.prototype = OriginalXHR.prototype;
-  Object.defineProperties(PatchedXHR, {
-    UNSENT: { value: OriginalXHR.UNSENT },
-    OPENED: { value: OriginalXHR.OPENED },
-    HEADERS_RECEIVED: { value: OriginalXHR.HEADERS_RECEIVED },
-    LOADING: { value: OriginalXHR.LOADING },
-    DONE: { value: OriginalXHR.DONE },
+  const PatchedXHR = new Proxy(OriginalXHR, {
+    construct(target, args, newTarget) {
+      const xhr = Reflect.construct(target, args, newTarget) as XMLHttpRequest;
+      return instrumentXhr(xhr);
+    },
   });
 
-  window.XMLHttpRequest = PatchedXHR as unknown as typeof XMLHttpRequest;
+  window.XMLHttpRequest = PatchedXHR;
+  return () => {
+    active = false;
+    if (window.XMLHttpRequest === PatchedXHR) {
+      window.XMLHttpRequest = OriginalXHR;
+    }
+  };
 }
