@@ -65,10 +65,10 @@ function install(): void {
   const hooksHealthy = (): boolean =>
     Boolean(
       hookRefs &&
-        window.fetch === hookRefs.fetch &&
-        window.EventSource === hookRefs.eventSource &&
-        window.XMLHttpRequest === hookRefs.xhr &&
-        window.WebSocket === hookRefs.webSocket,
+      window.fetch === hookRefs.fetch &&
+      window.EventSource === hookRefs.eventSource &&
+      window.XMLHttpRequest === hookRefs.xhr &&
+      window.WebSocket === hookRefs.webSocket,
     );
 
   const uninstallHooks = (): void => {
