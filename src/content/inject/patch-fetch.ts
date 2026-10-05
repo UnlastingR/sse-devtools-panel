@@ -141,12 +141,14 @@ export function patchFetch(
     } catch (err) {
       if (announced) {
         const classified = classifyThrownError(err);
-        if (active) postError({
-          requestId,
-          message: classified.message,
-          endedAt: Date.now(),
-          closeReason: classified.closeReason,
-        });
+        if (active) {
+          postError({
+            requestId,
+            message: classified.message,
+            endedAt: Date.now(),
+            closeReason: classified.closeReason,
+          });
+        }
       }
       throw err;
     }

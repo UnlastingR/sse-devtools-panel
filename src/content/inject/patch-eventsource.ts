@@ -28,10 +28,7 @@ export function patchEventSource(
   const OriginalEventSource = window.EventSource;
   let active = true;
 
-  function instrumentEventSource(
-    instance: EventSource,
-    url: string | URL,
-  ): EventSource {
+  function instrumentEventSource(instance: EventSource, url: string | URL): EventSource {
     const requestId = nextId();
     const href = typeof url === "string" ? url : url.href;
     let ended = false;
@@ -39,15 +36,17 @@ export function patchEventSource(
     let reconnectCount = 0;
     let lastEventId = "";
 
-    if (active) postStart({
-      requestId,
-      url: href,
-      method: "GET",
-      contentType: "text/event-stream",
-      transport: "eventsource",
-      streamKind: "sse",
-      startedAt: Date.now(),
-    });
+    if (active) {
+      postStart({
+        requestId,
+        url: href,
+        method: "GET",
+        contentType: "text/event-stream",
+        transport: "eventsource",
+        streamKind: "sse",
+        startedAt: Date.now(),
+      });
+    }
 
     const finish = (mode: "end" | "error", closeReason: StreamCloseReason, message?: string) => {
       if (!active) return;

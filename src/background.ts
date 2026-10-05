@@ -153,10 +153,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const stateRequest = message as CaptureStateRequestMessage;
-  if (
-    stateRequest?.source === CONTROL_SOURCE &&
-    stateRequest.type === "capture-state-request"
-  ) {
+  if (stateRequest?.source === CONTROL_SOURCE && stateRequest.type === "capture-state-request") {
     const tabId = sender.tab?.id;
     sendResponse({ enabled: typeof tabId === "number" && hasLivePorts(tabId) });
     return;

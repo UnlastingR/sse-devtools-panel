@@ -201,10 +201,7 @@ export function patchWebSocket(
     }
   };
 
-  function instrumentWebSocket(
-    instance: WebSocket,
-    url: string | URL,
-  ): WebSocket {
+  function instrumentWebSocket(instance: WebSocket, url: string | URL): WebSocket {
     const socketUrl = String(url);
     if (!isChatgptSocketUrl(socketUrl)) return instance;
     const socketId = ++socketSeq;
