@@ -162,9 +162,9 @@ function isChatgptWorkSignal(value: unknown): boolean {
       return true;
     }
     if (metadata.turn_mode === "projects" || metadata.turn_use_case === "connectors") return true;
-    if (metadata.temporal_conversation_turn === true || metadata.resume_with_websockets === true) {
-      return true;
-    }
+    // WebSocket resume is a transport capability shared by normal Chat and
+    // Work. It must never classify the product mode on its own.
+    if (metadata.temporal_conversation_turn === true) return true;
   }
   if (value.type === "input_message" && isRecord(value.input_message)) {
     if (isChatgptWorkMetadata(chatgptMessageMetadata(value.input_message))) return true;

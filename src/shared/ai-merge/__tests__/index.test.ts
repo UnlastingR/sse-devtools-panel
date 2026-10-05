@@ -1750,6 +1750,56 @@ describe("ai-merge", () => {
       );
       assert(normalChat.profile === "chatgpt-web-chat", "normal ChatGPT SSE uses chat profile");
 
+      const chatWithWebsocketResume = detectAiProfile(
+        [
+          ev("v1", "delta_encoding"),
+          ev(
+            JSON.stringify({
+              o: "add",
+              v: {
+                message: {
+                  id: "thinking-chat-message",
+                  author: { role: "assistant" },
+                  content: {
+                    content_type: "thoughts",
+                    thoughts: [{ summary: "思考中", content: "", chunks: [], finished: false }],
+                  },
+                  metadata: {
+                    working_turn_id: "thinking-chat-turn",
+                    turn_exchange_id: "thinking-chat-turn",
+                    reasoning_status: "is_reasoning",
+                    async_source: "saserver-westus3-prod.example",
+                  },
+                  recipient: "all",
+                },
+              },
+              conversation_id: "conv",
+            }),
+            "delta",
+          ),
+          ev(
+            JSON.stringify({
+              type: "server_ste_metadata",
+              metadata: {
+                model_slug: "gpt-5-6-thinking",
+                requested_model_experience: "thinking",
+                product_experience: "chat",
+                resume_with_websockets: true,
+                temporal_conversation_turn: false,
+                turn_mode: "default",
+                turn_use_case: "image gen",
+              },
+              conversation_id: "conv",
+            }),
+          ),
+        ],
+        "https://chatgpt.com/backend-api/f/conversation",
+      );
+      assert(
+        chatWithWebsocketResume.profile === "chatgpt-web-chat",
+        "WebSocket resume is transport metadata, not a Work signal",
+      );
+
       const workByModel = detectAiProfile(
         [
           ev("v1", "delta_encoding"),
