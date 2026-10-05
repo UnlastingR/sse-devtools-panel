@@ -161,7 +161,9 @@ function isChatgptWorkSignal(value: unknown): boolean {
     if (metadata.requested_model_experience === "work" || metadata.product_experience === "work") {
       return true;
     }
-    if (metadata.turn_mode === "projects" || metadata.turn_use_case === "connectors") return true;
+    // Projects and connector-backed turns are also used by normal ChatGPT
+    // conversations. They describe where/how the turn runs, not the product
+    // experience, so neither is sufficient evidence for Work on its own.
     // WebSocket resume is a transport capability shared by normal Chat and
     // Work. It must never classify the product mode on its own.
     if (metadata.temporal_conversation_turn === true) return true;

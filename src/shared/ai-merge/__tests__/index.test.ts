@@ -1800,6 +1800,52 @@ describe("ai-merge", () => {
         "WebSocket resume is transport metadata, not a Work signal",
       );
 
+      const projectChatWithConnectors = detectAiProfile(
+        [
+          ev("v1", "delta_encoding"),
+          ev(
+            JSON.stringify({
+              o: "add",
+              v: {
+                message: {
+                  id: "project-chat-message",
+                  author: { role: "assistant" },
+                  content: { content_type: "text", parts: [""] },
+                  metadata: {
+                    working_turn_id: "project-chat-turn",
+                    turn_exchange_id: "project-chat-turn",
+                    resolved_model_slug: "gpt-5-6-thinking",
+                  },
+                  recipient: "all",
+                },
+              },
+              conversation_id: "conv",
+            }),
+            "delta",
+          ),
+          ev(
+            JSON.stringify({
+              type: "server_ste_metadata",
+              metadata: {
+                model_slug: "gpt-5-6-thinking",
+                requested_model_experience: "thinking",
+                product_experience: "chat",
+                tool_name: "CodeModeTool",
+                temporal_conversation_turn: false,
+                turn_mode: "projects",
+                turn_use_case: "connectors",
+              },
+              conversation_id: "conv",
+            }),
+          ),
+        ],
+        "https://chatgpt.com/backend-api/f/conversation",
+      );
+      assert(
+        projectChatWithConnectors.profile === "chatgpt-web-chat",
+        "Projects/connectors metadata is normal Chat context, not a Work signal",
+      );
+
       const workByModel = detectAiProfile(
         [
           ev("v1", "delta_encoding"),
