@@ -1,5 +1,8 @@
 export const MESSAGE_SOURCE = "eventstream" as const;
 
+/** Internal control channel used to enable page-world capture only while the panel is attached. */
+export const CONTROL_SOURCE = "eventstream-control" as const;
+
 /** chrome.runtime Port name between DevTools panel and service worker. */
 export const PANEL_PORT = "eventstream-panel" as const;
 
@@ -78,6 +81,17 @@ export type PageToExtensionMessage =
   | { source: typeof MESSAGE_SOURCE; type: "stream-error"; payload: StreamErrorPayload }
   | { source: typeof MESSAGE_SOURCE; type: "stream-reconnect"; payload: StreamReconnectPayload }
   | { source: typeof MESSAGE_SOURCE; type: "stream-discard"; payload: StreamDiscardPayload };
+
+export type CaptureControlMessage = {
+  source: typeof CONTROL_SOURCE;
+  type: "capture-control";
+  payload: { enabled: boolean };
+};
+
+export type CaptureStateRequestMessage = {
+  source: typeof CONTROL_SOURCE;
+  type: "capture-state-request";
+};
 
 export type RelayMessage = PageToExtensionMessage & {
   tabId: number;

@@ -2,7 +2,7 @@ import { classifyThrownError } from "../../shared/stream-close";
 import type { StreamKind } from "../../shared/types";
 import { guessStreamKindFromRequest, resolveStreamKind } from "./detect";
 import {
-  collectFetchRequestMeta,
+  collectFetchRequestMetaSync,
   normalizeResponseHeaders,
   resolveMethod,
   resolveUrl,
@@ -32,15 +32,29 @@ export function patchFetch(
   postEnd: PostEnd,
   postError: PostError,
   postDiscard: PostDiscard,
-): void {
-  const originalFetch = window.fetch.bind(window);
+): () => void {
+  const originalFetch = window.fetch;
+  let active = true;
 
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const captureFetch = async (
+    target: typeof window.fetch,
+    thisArg: unknown,
+    argArray: Parameters<typeof window.fetch>,
+  ): Promise<Response> => {
+    // Dispatch the native request before doing any capture work. This keeps the
+    // page-visible timing as close as possible to an untouched window.fetch.
+    const responsePromise = Reflect.apply(target, thisArg, argArray) as Promise<Response>;
+    const [input, init] = argArray;
     const requestId = nextId();
     const url = resolveUrl(input);
     const method = resolveMethod(input, init);
     const startedAt = Date.now();
-    const reqMeta = await collectFetchRequestMeta(input, init);
+    let reqMeta: ReturnType<typeof collectFetchRequestMetaSync> = {};
+    try {
+      reqMeta = collectFetchRequestMetaSync(input, init);
+    } catch {
+      // Metadata capture is best effort and must never affect the page request.
+    }
     let announced = false;
 
     const announce = (extra: {
@@ -51,6 +65,7 @@ export function patchFetch(
       url?: string;
       responseHeaders?: Record<string, string>;
     }): void => {
+      if (!active) return;
       postStart({
         requestId,
         url: extra.url ?? url,
@@ -79,7 +94,7 @@ export function patchFetch(
     }
 
     try {
-      const response = await originalFetch(input, init);
+      const response = await responsePromise;
 
       const contentType = response.headers.get("content-type");
       const streamKind = resolveStreamKind({
@@ -90,7 +105,7 @@ export function patchFetch(
       });
       if (!streamKind) {
         if (announced) {
-          postDiscard(requestId);
+          if (active) postDiscard(requestId);
         }
         return response;
       }
@@ -104,10 +119,19 @@ export function patchFetch(
         responseHeaders: normalizeResponseHeaders(response.headers),
       });
 
+      const guardedChunk: PostChunk = (payload) => {
+        if (active) postChunk(payload);
+      };
+      const guardedEnd: PostEnd = (payload) => {
+        if (active) postEnd(payload);
+      };
+      const guardedError: PostError = (payload) => {
+        if (active) postError(payload);
+      };
       const sink =
         streamKind === "connect-json"
-          ? createConnectJsonSink(requestId, postChunk, postEnd, postError)
-          : createFetchTextSink(requestId, postChunk, postEnd, postError);
+          ? createConnectJsonSink(requestId, guardedChunk, guardedEnd, guardedError)
+          : createFetchTextSink(requestId, guardedChunk, guardedEnd, guardedError);
       // Keep ChatGPT's long-lived conversation SSE streams single-consumer.
       // response.clone() tees the body into another consumer, which can change
       // buffering/backpressure behavior for a stream that may stay open for a
@@ -117,7 +141,7 @@ export function patchFetch(
     } catch (err) {
       if (announced) {
         const classified = classifyThrownError(err);
-        postError({
+        if (active) postError({
           requestId,
           message: classified.message,
           endedAt: Date.now(),
@@ -126,5 +150,17 @@ export function patchFetch(
       }
       throw err;
     }
+  };
+
+  const patchedFetch = new Proxy(originalFetch, {
+    apply(target, thisArg, argArray) {
+      return captureFetch(target, thisArg, argArray as Parameters<typeof window.fetch>);
+    },
+  });
+
+  window.fetch = patchedFetch;
+  return () => {
+    active = false;
+    if (window.fetch === patchedFetch) window.fetch = originalFetch;
   };
 }

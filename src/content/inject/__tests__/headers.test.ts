@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   clipPayloadText,
+  collectFetchRequestMetaSync,
   isSensitiveHeaderName,
   MAX_PAYLOAD_PREVIEW,
   normalizeHeaders,
@@ -60,5 +61,32 @@ describe("headers", () => {
     assert(normalized.authorization === "[REDACTED]", "normalize auth");
     assert(normalized["x-access-token"] === "[REDACTED]", "normalize access token");
     assert(normalized.accept === "text/event-stream", "normalize accept");
+  });
+
+  it("does not consume Request bodies while collecting fetch metadata", () => {
+    const request = new Request("https://example.test/stream", {
+      method: "POST",
+      headers: { Accept: "text/event-stream" },
+      body: JSON.stringify({ stream: true, prompt: "hello" }),
+    });
+
+    const meta = collectFetchRequestMetaSync(request);
+
+    expect(request.bodyUsed).toBe(false);
+    expect(meta.headers?.accept).toBe("text/event-stream");
+    expect(meta.payloadPreview).toBeUndefined();
+  });
+
+  it("captures synchronously inspectable init bodies without delaying fetch", () => {
+    const body = JSON.stringify({ stream: true, prompt: "hello" });
+    const meta = collectFetchRequestMetaSync("https://example.test/stream", {
+      method: "POST",
+      headers: { Accept: "text/event-stream" },
+      body,
+    });
+
+    expect(meta.headers?.accept).toBe("text/event-stream");
+    expect(meta.payloadPreview).toBe(body);
+    expect(meta.payloadTruncated).toBe(false);
   });
 });

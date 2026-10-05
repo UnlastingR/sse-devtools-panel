@@ -1,6 +1,9 @@
 import {
+  CONTROL_SOURCE,
   MESSAGE_SOURCE,
   PANEL_PORT,
+  type CaptureControlMessage,
+  type CaptureStateRequestMessage,
   type PageToExtensionMessage,
   type RelayMessage,
 } from "./shared/types";
@@ -40,6 +43,17 @@ function bufferFor(tabId: number): RelayBuffer<BufferedRelayMessage> {
 function hasLivePorts(tabId: number): boolean {
   const ports = panelPorts.get(tabId);
   return Boolean(ports && ports.size > 0);
+}
+
+function setCaptureEnabled(tabId: number, enabled: boolean): void {
+  const message: CaptureControlMessage = {
+    source: CONTROL_SOURCE,
+    type: "capture-control",
+    payload: { enabled },
+  };
+  void chrome.tabs.sendMessage(tabId, message).catch(() => {
+    // No content script yet (navigation/reload). bridge.ts requests state on startup.
+  });
 }
 
 function forwardToPorts(tabId: number, msg: RelayMessage): void {
@@ -91,6 +105,7 @@ function attachPanel(tabId: number, port: chrome.runtime.Port): void {
       panelPorts.set(tabId, set);
     }
     set.add(port);
+    if (set.size === 1) setCaptureEnabled(tabId, true);
   } finally {
     attachingTabs.delete(tabId);
   }
@@ -129,13 +144,23 @@ chrome.runtime.onConnect.addListener((port) => {
         set.delete(port);
         if (set.size === 0) {
           panelPorts.delete(tabId);
+          setCaptureEnabled(tabId, false);
         }
       }
     }
   });
 });
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const stateRequest = message as CaptureStateRequestMessage;
+  if (
+    stateRequest?.source === CONTROL_SOURCE &&
+    stateRequest.type === "capture-state-request"
+  ) {
+    const tabId = sender.tab?.id;
+    sendResponse({ enabled: typeof tabId === "number" && hasLivePorts(tabId) });
+    return;
+  }
   if (!isPageMessage(message)) return;
   const tabId = sender.tab?.id;
   if (typeof tabId !== "number") return;

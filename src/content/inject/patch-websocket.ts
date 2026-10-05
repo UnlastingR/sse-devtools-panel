@@ -127,10 +127,11 @@ export function patchWebSocket(
   postChunk: PostChunk,
   postEnd: PostEnd,
   postError: PostError,
-): void {
+): () => void {
   const OriginalWebSocket = window.WebSocket;
   const topics = new Map<string, TopicState>();
   let socketSeq = 0;
+  let active = true;
 
   const ensureTopic = (topicId: string, socketUrl: string, socketId: number): TopicState => {
     let state = topics.get(topicId);
@@ -175,6 +176,7 @@ export function patchWebSocket(
   };
 
   const processEnvelope = (value: unknown, socketUrl: string, socketId: number): void => {
+    if (!active) return;
     for (const item of extractChatgptWebSocketTurnItems(value)) {
       if (item.type === "done") {
         finishTopic(item.topicId);
@@ -199,18 +201,16 @@ export function patchWebSocket(
     }
   };
 
-  function PatchedWebSocket(
-    this: WebSocket,
+  function instrumentWebSocket(
+    instance: WebSocket,
     url: string | URL,
-    protocols?: string | string[],
   ): WebSocket {
-    const instance =
-      protocols === undefined ? new OriginalWebSocket(url) : new OriginalWebSocket(url, protocols);
     const socketUrl = String(url);
     if (!isChatgptSocketUrl(socketUrl)) return instance;
     const socketId = ++socketSeq;
 
     instance.addEventListener("message", (event) => {
+      if (!active) return;
       if (typeof event.data !== "string") return;
       try {
         processEnvelope(JSON.parse(event.data) as unknown, socketUrl, socketId);
@@ -220,6 +220,7 @@ export function patchWebSocket(
     });
 
     instance.addEventListener("close", () => {
+      if (!active) return;
       for (const [topicId, state] of topics) {
         if (state.socketId !== socketId) continue;
         if (!state.ended) {
@@ -238,11 +239,19 @@ export function patchWebSocket(
     return instance;
   }
 
-  PatchedWebSocket.prototype = OriginalWebSocket.prototype;
-  Object.defineProperty(PatchedWebSocket, "CONNECTING", { value: OriginalWebSocket.CONNECTING });
-  Object.defineProperty(PatchedWebSocket, "OPEN", { value: OriginalWebSocket.OPEN });
-  Object.defineProperty(PatchedWebSocket, "CLOSING", { value: OriginalWebSocket.CLOSING });
-  Object.defineProperty(PatchedWebSocket, "CLOSED", { value: OriginalWebSocket.CLOSED });
+  const PatchedWebSocket = new Proxy(OriginalWebSocket, {
+    construct(target, args, newTarget) {
+      const instance = Reflect.construct(target, args, newTarget) as WebSocket;
+      return instrumentWebSocket(instance, args[0] as string | URL);
+    },
+  });
 
-  window.WebSocket = PatchedWebSocket as unknown as typeof WebSocket;
+  window.WebSocket = PatchedWebSocket;
+  return () => {
+    active = false;
+    topics.clear();
+    if (window.WebSocket === PatchedWebSocket) {
+      window.WebSocket = OriginalWebSocket;
+    }
+  };
 }
