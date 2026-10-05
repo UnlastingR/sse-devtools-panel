@@ -355,4 +355,40 @@ describe("ChatGPT logical turn grouping", () => {
       turnExchangeId: "turn-a",
     });
   });
+
+  it("invalidates cached record analysis when new events arrive", () => {
+    const mutable = record("mutable", 1, [
+      event({
+        type: "input_message",
+        conversation_id: "conv",
+        input_message: {
+          metadata: { turn_exchange_id: "turn-a", working_turn_id: "work" },
+        },
+      }),
+    ]);
+
+    expect(resolveChatgptTurnGroup(mutable, [mutable])?.profile).toBe("chatgpt-web-chat");
+
+    mutable.events.push(
+      event(
+        {
+          v: {
+            message: {
+              metadata: {
+                working_turn_id: "work",
+                turn_exchange_id: "turn-a",
+                is_temporal_turn: true,
+                stream_topic_id: "conversation-turn-work",
+                async_source: "server:conversation-turn-work:US",
+              },
+            },
+          },
+          conversation_id: "conv",
+        },
+        1,
+      ),
+    );
+
+    expect(resolveChatgptTurnGroup(mutable, [mutable])?.profile).toBe("chatgpt-web-work");
+  });
 });

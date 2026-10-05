@@ -17,6 +17,25 @@ export interface ChatgptTurnGroup {
   records: StreamRecord[];
 }
 
+type CachedRecordAnalysis = {
+  eventCount: number;
+  lastEvent?: SseEvent;
+  url: string;
+  requestPayloadPreview?: string;
+  identity: ChatgptTurnIdentity | null;
+  profile: AiProfile;
+  fileIds: Set<string>;
+  inputMessageIds: Set<string>;
+  uploadOriginationMessageId?: string;
+};
+
+/**
+ * Sidebar rendering can run once per animation frame while a turn is streaming.
+ * Cache all expensive record-wide ChatGPT scans so completed mother turns are not
+ * JSON-parsed from the beginning again for every packet of every later turn.
+ */
+const recordAnalysisCache = new WeakMap<StreamRecord, CachedRecordAnalysis>();
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -70,7 +89,7 @@ function collectFileIds(value: unknown, out: Set<string>, depth = 0): void {
   }
 }
 
-export function chatgptRecordFileIds(record: StreamRecord): Set<string> {
+function computeChatgptRecordFileIds(record: StreamRecord): Set<string> {
   const out = new Set<string>();
   if (record.requestPayloadPreview) {
     try {
@@ -101,7 +120,7 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
-function uploadOriginationMessageId(record: StreamRecord): string | undefined {
+function computeUploadOriginationMessageId(record: StreamRecord): string | undefined {
   if (!isChatgptUploadStreamUrl(record.url) || !record.requestPayloadPreview) return undefined;
   try {
     const parsed = JSON.parse(record.requestPayloadPreview) as unknown;
@@ -115,7 +134,7 @@ function uploadOriginationMessageId(record: StreamRecord): string | undefined {
   }
 }
 
-function chatgptInputMessageIds(record: StreamRecord): Set<string> {
+function computeChatgptInputMessageIds(record: StreamRecord): Set<string> {
   const out = new Set<string>();
   for (const event of record.events) {
     const parsed = parseJson(event.data);
@@ -135,6 +154,39 @@ function chatgptInputMessageIds(record: StreamRecord): Set<string> {
   return out;
 }
 
+function analyzeRecord(record: StreamRecord): CachedRecordAnalysis {
+  const lastEvent = record.events.at(-1);
+  const cached = recordAnalysisCache.get(record);
+  if (
+    cached &&
+    cached.eventCount === record.events.length &&
+    cached.lastEvent === lastEvent &&
+    cached.url === record.url &&
+    cached.requestPayloadPreview === record.requestPayloadPreview
+  ) {
+    return cached;
+  }
+
+  const analysis: CachedRecordAnalysis = {
+    eventCount: record.events.length,
+    lastEvent,
+    url: record.url,
+    requestPayloadPreview: record.requestPayloadPreview,
+    identity: chatgptTurnIdentity(record.events),
+    profile: detectAiProfile(record.events, record.url).profile,
+    fileIds: computeChatgptRecordFileIds(record),
+    inputMessageIds: computeChatgptInputMessageIds(record),
+    uploadOriginationMessageId: computeUploadOriginationMessageId(record),
+  };
+  recordAnalysisCache.set(record, analysis);
+  return analysis;
+}
+
+export function chatgptRecordFileIds(record: StreamRecord): Set<string> {
+  // Return a copy so callers cannot corrupt the internal cache.
+  return new Set(analyzeRecord(record).fileIds);
+}
+
 function uploadOwnerConversation(
   upload: StreamRecord,
   records: ReadonlyArray<StreamRecord>,
@@ -144,18 +196,18 @@ function uploadOwnerConversation(
     .filter((record) => isChatgptConversationUrl(record.url))
     .sort((a, b) => a.startedAt - b.startedAt || a.requestId.localeCompare(b.requestId));
 
-  const originationMessageId = uploadOriginationMessageId(upload);
+  const originationMessageId = analyzeRecord(upload).uploadOriginationMessageId;
   if (originationMessageId) {
     const exact = conversations.find((record) =>
-      chatgptInputMessageIds(record).has(originationMessageId),
+      analyzeRecord(record).inputMessageIds.has(originationMessageId),
     );
     if (exact) return exact;
   }
 
-  const uploadFiles = chatgptRecordFileIds(upload);
+  const uploadFiles = analyzeRecord(upload).fileIds;
   if (uploadFiles.size === 0) return undefined;
   const matching = conversations.filter((record) =>
-    intersects(uploadFiles, chatgptRecordFileIds(record)),
+    intersects(uploadFiles, analyzeRecord(record).fileIds),
   );
   if (matching.length === 0) return undefined;
 
@@ -219,11 +271,11 @@ export function chatgptTurnIdentity(
 }
 
 function chatgptProfile(record: StreamRecord): AiProfile {
-  return detectAiProfile(record.events, record.url).profile;
+  return analyzeRecord(record).profile;
 }
 
 function sameWorkingTurn(record: StreamRecord, identity: ChatgptTurnIdentity): boolean {
-  const other = chatgptTurnIdentity(record.events);
+  const other = analyzeRecord(record).identity;
   return Boolean(
     other &&
     other.conversationId === identity.conversationId &&
@@ -252,7 +304,7 @@ export function resolveChatgptTurnGroup(
     anchor = uploadOwnerConversation(anchor, all) ?? selected;
     if (anchor === selected) return null;
   }
-  const identity = chatgptTurnIdentity(anchor.events);
+  const identity = analyzeRecord(anchor).identity;
   if (!identity) return null;
   const family = all.filter((record) => sameWorkingTurn(record, identity));
   if (!family.some((record) => record.requestId === anchor.requestId)) family.push(anchor);
@@ -260,7 +312,7 @@ export function resolveChatgptTurnGroup(
   const related = isWork
     ? family
     : family.filter((record) => {
-        const other = chatgptTurnIdentity(record.events);
+        const other = analyzeRecord(record).identity;
         return Boolean(other && chatTurnGeneration(other) === chatTurnGeneration(identity));
       });
   const relatedIds = new Set(related.map((record) => record.requestId));
@@ -306,9 +358,10 @@ export function resolveChatgptTurnGroups(records: Iterable<StreamRecord>): Chatg
 
 export function chatgptTurnKey(record: StreamRecord): string | null {
   if (!isChatgptConversationUrl(record.url)) return null;
-  const identity = chatgptTurnIdentity(record.events);
+  const analysis = analyzeRecord(record);
+  const identity = analysis.identity;
   if (!identity) return null;
-  const profile = chatgptProfile(record);
+  const profile = analysis.profile;
   if (profile === "chatgpt-web-work") {
     // Work permission/connector continuations deliberately start a new
     // turn_exchange_id while preserving working_turn_id. Treat that as a new

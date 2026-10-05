@@ -13,6 +13,8 @@ import { estimateRelayBytes, RelayBuffer } from "./shared/relay-buffer";
 const panelPorts = new Map<number, Set<chrome.runtime.Port>>();
 /** Tabs currently replaying buffered messages onto a newly attached panel. */
 const attachingTabs = new Set<number>();
+/** Short grace timers before disabling page capture after the last panel disappears. */
+const captureDisableTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
 const BUFFER_MAX_MESSAGES = 2_000;
 /** Room for a few large request payloads while the panel is closed. */
@@ -56,16 +58,44 @@ function setCaptureEnabled(tabId: number, enabled: boolean): void {
   });
 }
 
-function forwardToPorts(tabId: number, msg: RelayMessage): void {
+function cancelCaptureDisable(tabId: number): void {
+  const timer = captureDisableTimers.get(tabId);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  captureDisableTimers.delete(tabId);
+}
+
+function scheduleCaptureDisable(tabId: number): void {
+  cancelCaptureDisable(tabId);
+  const timer = setTimeout(() => {
+    captureDisableTimers.delete(tabId);
+    if (!hasLivePorts(tabId)) setCaptureEnabled(tabId, false);
+  }, 2_000);
+  captureDisableTimers.set(tabId, timer);
+}
+
+/** Returns how many panel ports accepted the message. Failed ports are pruned immediately. */
+function forwardToPorts(tabId: number, msg: RelayMessage): number {
   const ports = panelPorts.get(tabId);
-  if (!ports || ports.size === 0) return;
-  for (const port of ports) {
+  if (!ports || ports.size === 0) return 0;
+  let delivered = 0;
+  for (const port of [...ports]) {
     try {
       port.postMessage(msg);
+      delivered += 1;
     } catch {
-      // port dead
+      // A dead DevTools port used to remain in panelPorts forever, causing all
+      // later capture messages to disappear into a black hole until F12 was
+      // closed/reopened. Prune it synchronously so the current message can be
+      // buffered and the panel's reconnect loop can recover without data loss.
+      ports.delete(port);
     }
   }
+  if (ports.size === 0) {
+    panelPorts.delete(tabId);
+    scheduleCaptureDisable(tabId);
+  }
+  return delivered;
 }
 
 function enqueueOrForward(tabId: number, msg: RelayMessage): void {
@@ -77,26 +107,39 @@ function enqueueOrForward(tabId: number, msg: RelayMessage): void {
     });
     return;
   }
-  forwardToPorts(tabId, msg);
+  if (forwardToPorts(tabId, msg) > 0) return;
+  bufferFor(tabId).push({
+    type: msg.type,
+    byteSize: estimateRelayBytes(msg),
+    relay: msg,
+  });
 }
 
-function replayToPort(port: chrome.runtime.Port, batch: BufferedRelayMessage[]): void {
+function replayToPort(port: chrome.runtime.Port, batch: BufferedRelayMessage[]): number {
+  let delivered = 0;
   for (const item of batch) {
     try {
       port.postMessage(item.relay);
+      delivered += 1;
     } catch {
-      return;
+      break;
     }
   }
+  return delivered;
 }
 
 function attachPanel(tabId: number, port: chrome.runtime.Port): void {
+  cancelCaptureDisable(tabId);
   attachingTabs.add(tabId);
   try {
     for (;;) {
       const batch = bufferFor(tabId).drain();
       if (batch.length === 0) break;
-      replayToPort(port, batch);
+      const delivered = replayToPort(port, batch);
+      if (delivered < batch.length) {
+        for (const item of batch.slice(delivered)) bufferFor(tabId).push(item);
+        return;
+      }
     }
 
     let set = panelPorts.get(tabId);
@@ -115,9 +158,16 @@ function attachPanel(tabId: number, port: chrome.runtime.Port): void {
     const batch = bufferFor(tabId).drain();
     if (batch.length === 0) break;
     if (hasLivePorts(tabId)) {
-      for (const item of batch) forwardToPorts(tabId, item.relay);
+      for (let i = 0; i < batch.length; i += 1) {
+        const item = batch[i]!;
+        if (forwardToPorts(tabId, item.relay) === 0) {
+          for (const remaining of batch.slice(i)) bufferFor(tabId).push(remaining);
+          break;
+        }
+      }
     } else {
-      replayToPort(port, batch);
+      for (const item of batch) bufferFor(tabId).push(item);
+      break;
     }
   }
 }
@@ -131,6 +181,12 @@ chrome.runtime.onConnect.addListener((port) => {
     if (msg?.type === "init" && typeof msg.tabId === "number") {
       tabId = msg.tabId;
       attachPanel(tabId, port);
+      return;
+    }
+    if (msg?.type === "heartbeat" && typeof msg.tabId === "number" && msg.tabId === tabId) {
+      // Reassert capture on each heartbeat. This repairs a page/content-script
+      // lifecycle race without requiring the user to toggle DevTools.
+      setCaptureEnabled(msg.tabId, true);
     }
   };
 
@@ -144,7 +200,9 @@ chrome.runtime.onConnect.addListener((port) => {
         set.delete(port);
         if (set.size === 0) {
           panelPorts.delete(tabId);
-          setCaptureEnabled(tabId, false);
+          // Give the panel's automatic reconnect a short window. Keeping capture
+          // alive during the grace period lets background buffering bridge the gap.
+          scheduleCaptureDisable(tabId);
         }
       }
     }
@@ -167,6 +225,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  cancelCaptureDisable(tabId);
   panelPorts.delete(tabId);
   attachingTabs.delete(tabId);
   tabBuffers.delete(tabId);
