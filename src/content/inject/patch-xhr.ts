@@ -1,7 +1,13 @@
 import { classifyHttpStatus } from "../../shared/stream-close";
 import type { StreamCloseReason, StreamTransport } from "../../shared/types";
 import { guessStreamKindFromRequest, resolveStreamKind } from "./detect";
-import { clipPayloadText, parseRawResponseHeaders, redactHeaderValue } from "./headers";
+import {
+  clipPayloadText,
+  parseRawResponseHeaders,
+  redactCaptureUrl,
+  redactHeaderValue,
+  redactPayloadPreview,
+} from "./headers";
 import type { PostChunk, PostDiscard, PostEnd, PostError, PostStart } from "./types";
 
 /**
@@ -58,11 +64,11 @@ export function patchXhr(
         requestPayloadTruncated = undefined;
       } else if (typeof body === "string") {
         const clipped = clipPayloadText(body);
-        requestPayloadPreview = clipped.preview;
+        requestPayloadPreview = redactPayloadPreview(clipped.preview);
         requestPayloadTruncated = clipped.truncated;
       } else if (body instanceof URLSearchParams) {
         const clipped = clipPayloadText(body.toString());
-        requestPayloadPreview = clipped.preview;
+        requestPayloadPreview = redactPayloadPreview(clipped.preview);
         requestPayloadTruncated = clipped.truncated;
       } else if (body instanceof FormData) {
         const fields: string[] = [];
@@ -71,7 +77,7 @@ export function patchXhr(
           else fields.push(`${key}=[blob:${value.type || "application/octet-stream"}]`);
         });
         const clipped = clipPayloadText(fields.join("&"));
-        requestPayloadPreview = clipped.preview;
+        requestPayloadPreview = redactPayloadPreview(clipped.preview);
         requestPayloadTruncated = clipped.truncated;
       } else if (body instanceof Blob) {
         requestPayloadPreview = `[blob:${body.type || "application/octet-stream"}]`;
@@ -100,7 +106,7 @@ export function patchXhr(
         announced = true;
         postStart({
           requestId,
-          url,
+          url: redactCaptureUrl(url),
           method,
           requestHeaders:
             Object.keys(requestHeaders).length > 0 ? { ...requestHeaders } : undefined,
@@ -130,7 +136,7 @@ export function patchXhr(
       const kind = resolveStreamKind({
         responseContentType: contentType,
         requestHeaders,
-        url,
+        url: redactCaptureUrl(url),
         requestPayloadPreview,
       });
       // Connect+JSON is binary length-prefixed — XHR responseText corrupts frames.
@@ -204,8 +210,8 @@ export function patchXhr(
     const finishOk = (): void => {
       if (!active) return;
       if (!captured || !requestId || finished) return;
-      finished = true;
       emitDelta();
+      finished = true;
       postEnd({ requestId, endedAt: Date.now(), closeReason: "complete" });
     };
 
@@ -215,8 +221,8 @@ export function patchXhr(
     ): void => {
       if (!active) return;
       if (!captured || !requestId || finished) return;
-      finished = true;
       emitDelta();
+      finished = true;
       postError({ requestId, message, endedAt: Date.now(), closeReason });
     };
 

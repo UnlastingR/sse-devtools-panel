@@ -1,4 +1,5 @@
 import type { StreamCloseReason } from "../../shared/types";
+import { redactCaptureUrl } from "./headers";
 import type { PostChunk, PostEnd, PostError, PostReconnect, PostStart } from "./types";
 
 export function toSseFrame(typeName: string, data: string, id?: string): string {
@@ -39,7 +40,7 @@ export function patchEventSource(
     if (active) {
       postStart({
         requestId,
-        url: href,
+        url: redactCaptureUrl(href),
         method: "GET",
         contentType: "text/event-stream",
         transport: "eventsource",
@@ -131,14 +132,35 @@ export function patchEventSource(
       if (active) finish("error", "abort", "EventSource closed by client");
     };
 
+    // Native EventSource getters and EventTarget methods require the native
+    // instance as `this`. A Proxy receiver fails browser brand checks.
+    // Preserve stable identities for the methods that are not patched above.
+    type NativeMethod = (...args: never[]) => unknown;
+    const nativeMethods = new Map<PropertyKey, { original: NativeMethod; bound: NativeMethod }>();
+
     // Legacy / convenience handlers: `es.onping = fn` (in addition to addEventListener).
     return new Proxy(instance, {
-      set(target, prop, value, receiver) {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (
+          typeof value === "function" &&
+          (prop === "removeEventListener" || prop === "dispatchEvent")
+        ) {
+          const cached = nativeMethods.get(prop);
+          if (cached && cached.original === value) return cached.bound;
+          const bound = value.bind(target);
+          nativeMethods.set(prop, { original: value, bound });
+          return bound;
+        }
+        return value;
+      },
+      set(target, prop, value) {
         if (typeof prop === "string") {
           const type = eventTypeFromOnProperty(prop);
           if (type) trackType(type);
         }
-        return Reflect.set(target, prop, value, receiver);
+        // onmessage/onerror are native setters and must receive the real instance.
+        return Reflect.set(target, prop, value, target);
       },
     });
   }

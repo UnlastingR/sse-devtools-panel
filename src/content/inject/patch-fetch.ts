@@ -1,9 +1,10 @@
-import { classifyThrownError } from "../../shared/stream-close";
+import { classifyHttpStatus, classifyThrownError } from "../../shared/stream-close";
 import type { StreamKind } from "../../shared/types";
 import { guessStreamKindFromRequest, resolveStreamKind } from "./detect";
 import {
   collectFetchRequestMetaSync,
   normalizeResponseHeaders,
+  redactCaptureUrl,
   resolveMethod,
   resolveUrl,
 } from "./headers";
@@ -66,22 +67,26 @@ export function patchFetch(
       responseHeaders?: Record<string, string>;
     }): void => {
       if (!active) return;
-      postStart({
-        requestId,
-        url: extra.url ?? url,
-        method,
-        status: extra.status,
-        statusText: extra.statusText,
-        contentType: extra.contentType,
-        requestHeaders: reqMeta.headers,
-        responseHeaders: extra.responseHeaders,
-        requestPayloadPreview: reqMeta.payloadPreview,
-        requestPayloadTruncated: reqMeta.payloadTruncated,
-        transport: "fetch",
-        streamKind: extra.streamKind,
-        startedAt,
-      });
-      announced = true;
+      try {
+        postStart({
+          requestId,
+          url: redactCaptureUrl(extra.url ?? url),
+          method,
+          status: extra.status,
+          statusText: extra.statusText,
+          contentType: extra.contentType,
+          requestHeaders: reqMeta.headers,
+          responseHeaders: extra.responseHeaders,
+          requestPayloadPreview: reqMeta.payloadPreview,
+          requestPayloadTruncated: reqMeta.payloadTruncated,
+          transport: "fetch",
+          streamKind: extra.streamKind,
+          startedAt,
+        });
+        announced = true;
+      } catch {
+        // A failed recorder must never fail the fetch itself.
+      }
     };
 
     const pendingKind = guessStreamKindFromRequest({
@@ -89,65 +94,87 @@ export function patchFetch(
       url,
       requestPayloadPreview: reqMeta.payloadPreview,
     });
-    if (pendingKind) {
-      announce({ streamKind: pendingKind });
-    }
+    if (pendingKind) announce({ streamKind: pendingKind });
 
     try {
       const response = await responsePromise;
-
-      const contentType = response.headers.get("content-type");
-      const streamKind = resolveStreamKind({
-        responseContentType: contentType,
-        requestHeaders: reqMeta.headers,
-        url: response.url || url,
-        requestPayloadPreview: reqMeta.payloadPreview,
-      });
-      if (!streamKind) {
-        if (announced) {
-          if (active) postDiscard(requestId);
+      // Everything after the native fetch has resolved is best-effort capture.
+      // Never reject or replace a valid Response due to extension errors.
+      try {
+        const contentType = response.headers.get("content-type");
+        const streamKind = resolveStreamKind({
+          responseContentType: contentType,
+          requestHeaders: reqMeta.headers,
+          url: response.url || url,
+          requestPayloadPreview: reqMeta.payloadPreview,
+        });
+        if (!streamKind) {
+          if (announced && active) postDiscard(requestId);
+          return response;
         }
+
+        announce({
+          status: response.status,
+          statusText: response.statusText || undefined,
+          contentType: contentType ?? undefined,
+          streamKind,
+          url: response.url || url,
+          responseHeaders: normalizeResponseHeaders(response.headers),
+        });
+
+        // Request hints can say SSE even when the server returns a JSON 403/502.
+        // Preserve the actual HTTP failure without touching/reading its body.
+        if (response.status >= 400) {
+          const classified = classifyHttpStatus(response.status);
+          if (active) {
+            postError({
+              requestId,
+              message: classified.message,
+              endedAt: Date.now(),
+              closeReason: classified.closeReason,
+            });
+          }
+          return response;
+        }
+
+        const guardedChunk: PostChunk = (payload) => {
+          if (active) postChunk(payload);
+        };
+        const guardedEnd: PostEnd = (payload) => {
+          if (active) postEnd(payload);
+        };
+        const guardedError: PostError = (payload) => {
+          if (active) postError(payload);
+        };
+        const sink =
+          streamKind === "connect-json"
+            ? createConnectJsonSink(requestId, guardedChunk, guardedEnd, guardedError)
+            : createFetchTextSink(requestId, guardedChunk, guardedEnd, guardedError);
+        // Keep ChatGPT's long-lived conversation SSE streams single-consumer.
+        // response.clone() tees the body into another consumer, which can change
+        // buffering/backpressure behavior for a stream that may stay open for a
+        // long time. Observe the page's own reads instead.
+        const captureMode = isChatGptConversationStream(response.url || url) ? "observe" : "clone";
+        return captureFetchResponseBody(response, sink, captureMode);
+      } catch {
+        // Fetch succeeded: ignore instrumentation errors rather than making
+        // the application see a spurious network failure.
         return response;
       }
-
-      announce({
-        status: response.status,
-        statusText: response.statusText || undefined,
-        contentType: contentType ?? undefined,
-        streamKind,
-        url: response.url || url,
-        responseHeaders: normalizeResponseHeaders(response.headers),
-      });
-
-      const guardedChunk: PostChunk = (payload) => {
-        if (active) postChunk(payload);
-      };
-      const guardedEnd: PostEnd = (payload) => {
-        if (active) postEnd(payload);
-      };
-      const guardedError: PostError = (payload) => {
-        if (active) postError(payload);
-      };
-      const sink =
-        streamKind === "connect-json"
-          ? createConnectJsonSink(requestId, guardedChunk, guardedEnd, guardedError)
-          : createFetchTextSink(requestId, guardedChunk, guardedEnd, guardedError);
-      // Keep ChatGPT's long-lived conversation SSE streams single-consumer.
-      // response.clone() tees the body into another consumer, which can change
-      // buffering/backpressure behavior for a stream that may stay open for a
-      // long time. Observe the page's own reads instead.
-      const captureMode = isChatGptConversationStream(response.url || url) ? "observe" : "clone";
-      return captureFetchResponseBody(response, sink, captureMode);
     } catch (err) {
       if (announced) {
         const classified = classifyThrownError(err);
         if (active) {
-          postError({
-            requestId,
-            message: classified.message,
-            endedAt: Date.now(),
-            closeReason: classified.closeReason,
-          });
+          try {
+            postError({
+              requestId,
+              message: classified.message,
+              endedAt: Date.now(),
+              closeReason: classified.closeReason,
+            });
+          } catch {
+            // Do not mask the original fetch rejection.
+          }
         }
       }
       throw err;

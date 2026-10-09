@@ -35,6 +35,64 @@ export function redactHeaderValue(name: string, value: string): string {
   return value;
 }
 
+/** Request body/query keys often use camelCase rather than HTTP header casing. */
+export function isSensitiveFieldName(name: string): boolean {
+  const normalized = name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/_/g, "-");
+  return (
+    isSensitiveHeaderName(normalized) ||
+    /^(token|jwt|bearer|password|passwd|secret|credential|credentials|client-secret|refresh-token|authorization-code|access-key|private-key|session-id|session-key)$/i.test(
+      normalized,
+    ) ||
+    /(?:^|-)(?:password|passwd|credential|secret|token|api-key|private-key)(?:-|$)/i.test(
+      normalized,
+    )
+  );
+}
+
+function redactKeyValuePairs(value: string, includeUrlDelimiters: boolean): string {
+  const pairs = includeUrlDelimiters ? /(^|[?&#])([^=&#?]+)=([^&#]*)/g : /(^|&)([^=&]+)=([^&]*)/g;
+  return value.replace(pairs, (match, prefix: string, rawName: string) => {
+    let name = rawName;
+    try {
+      name = decodeURIComponent(rawName.replace(/\+/g, " "));
+    } catch {
+      // Malformed escapes must not break capture.
+    }
+    return isSensitiveFieldName(name) ? `${prefix}${rawName}=[REDACTED]` : match;
+  });
+}
+
+/** Only changes the recorded URL; the original request URL is never modified. */
+export function redactCaptureUrl(url: string): string {
+  const withoutCredentials = url.replace(/(\/\/)[^/?#@]+@/g, "$1[REDACTED]@");
+  return redactKeyValuePairs(withoutCredentials, true);
+}
+
+/**
+ * Keep stream flags and ordinary debugging fields visible, but do not store
+ * obvious credentials embedded in request bodies (including nested JSON).
+ */
+export function redactPayloadPreview(preview: string): string {
+  const trimmed = preview.trimStart();
+  let sanitized: string;
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      sanitized = JSON.stringify(JSON.parse(preview) as unknown, (name: string, value: unknown) =>
+        name && isSensitiveFieldName(name) ? "[REDACTED]" : value,
+      );
+    } catch {
+      // A truncated or malformed JSON body cannot be scrubbed reliably.
+      return "[unparseable JSON preview omitted]";
+    }
+  } else {
+    sanitized = redactKeyValuePairs(preview, false);
+  }
+  return sanitized.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1[REDACTED]");
+}
+
 export function normalizeHeaders(input?: HeadersInit): Record<string, string> | undefined {
   if (!input) return undefined;
   const out: Record<string, string> = {};
@@ -98,11 +156,11 @@ export async function payloadPreviewFromBody(
   if (body == null) return {};
   if (typeof body === "string") {
     const clipped = clipPayloadText(body);
-    return { preview: clipped.preview, truncated: clipped.truncated };
+    return { preview: redactPayloadPreview(clipped.preview), truncated: clipped.truncated };
   }
   if (body instanceof URLSearchParams) {
     const clipped = clipPayloadText(body.toString());
-    return { preview: clipped.preview, truncated: clipped.truncated };
+    return { preview: redactPayloadPreview(clipped.preview), truncated: clipped.truncated };
   }
   if (body instanceof FormData) {
     const fields: string[] = [];
@@ -114,13 +172,13 @@ export async function payloadPreviewFromBody(
       }
     });
     const clipped = clipPayloadText(fields.join("&"));
-    return { preview: clipped.preview, truncated: clipped.truncated };
+    return { preview: redactPayloadPreview(clipped.preview), truncated: clipped.truncated };
   }
   if (body instanceof Blob) {
     try {
       const text = await body.text();
       const clipped = clipPayloadText(text);
-      return { preview: clipped.preview, truncated: clipped.truncated };
+      return { preview: redactPayloadPreview(clipped.preview), truncated: clipped.truncated };
     } catch {
       return { preview: `[blob:${body.type || "application/octet-stream"}]` };
     }
@@ -154,7 +212,7 @@ export async function collectFetchRequestMeta(
       const text = await body.text();
       if (text) {
         const clipped = clipPayloadText(text);
-        payloadPreview = clipped.preview;
+        payloadPreview = redactPayloadPreview(clipped.preview);
         payloadTruncated = clipped.truncated;
       }
     } catch {
@@ -200,11 +258,11 @@ export function collectFetchRequestMetaSync(
   const body = init?.body;
   if (typeof body === "string") {
     const clipped = clipPayloadText(body);
-    payloadPreview = clipped.preview;
+    payloadPreview = redactPayloadPreview(clipped.preview);
     payloadTruncated = clipped.truncated;
   } else if (body instanceof URLSearchParams) {
     const clipped = clipPayloadText(body.toString());
-    payloadPreview = clipped.preview;
+    payloadPreview = redactPayloadPreview(clipped.preview);
     payloadTruncated = clipped.truncated;
   } else if (body instanceof FormData) {
     const fields: string[] = [];
@@ -213,7 +271,7 @@ export function collectFetchRequestMetaSync(
       else fields.push(`${key}=[blob:${value.type || "application/octet-stream"}]`);
     });
     const clipped = clipPayloadText(fields.join("&"));
-    payloadPreview = clipped.preview;
+    payloadPreview = redactPayloadPreview(clipped.preview);
     payloadTruncated = clipped.truncated;
   } else if (body instanceof Blob) {
     payloadPreview = `[blob:${body.type || "application/octet-stream"}]`;
