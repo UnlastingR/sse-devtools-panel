@@ -135,7 +135,8 @@ export function patchEventSource(
     // Native EventSource getters and EventTarget methods require the native
     // instance as `this`. A Proxy receiver fails browser brand checks.
     // Preserve stable identities for the methods that are not patched above.
-    const nativeMethods = new Map<PropertyKey, { original: Function; bound: Function }>();
+    type NativeMethod = (...args: never[]) => unknown;
+    const nativeMethods = new Map<PropertyKey, { original: NativeMethod; bound: NativeMethod }>();
 
     // Legacy / convenience handlers: `es.onping = fn` (in addition to addEventListener).
     return new Proxy(instance, {

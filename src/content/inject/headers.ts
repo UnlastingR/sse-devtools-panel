@@ -77,7 +77,7 @@ export function redactCaptureUrl(url: string): string {
  */
 export function redactPayloadPreview(preview: string): string {
   const trimmed = preview.trimStart();
-  let sanitized = preview;
+  let sanitized: string;
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     try {
       sanitized = JSON.stringify(JSON.parse(preview) as unknown, (name: string, value: unknown) =>
