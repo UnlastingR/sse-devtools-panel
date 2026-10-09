@@ -147,7 +147,7 @@ export function patchEventSource(
           (prop === "removeEventListener" || prop === "dispatchEvent")
         ) {
           const cached = nativeMethods.get(prop);
-          if (cached?.original === value) return cached.bound;
+          if (cached && cached.original === value) return cached.bound;
           const bound = value.bind(target);
           nativeMethods.set(prop, { original: value, bound });
           return bound;
