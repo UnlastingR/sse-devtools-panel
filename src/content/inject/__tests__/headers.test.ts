@@ -112,10 +112,10 @@ describe("headers", () => {
   it("redacts URL credentials, query parameters, and form fields", () => {
     expect(
       redactCaptureUrl("https://person:pw@example.test/sse?access_token=abc&stream=true#jwt=xyz"),
-    ).toBe("https://[REDACTED]@example.test/sse?access_token=[REDACTED]&stream=true#jwt=[REDACTED]");
-    expect(redactPayloadPreview("api_key=abc&stream=true")).toBe(
-      "api_key=[REDACTED]&stream=true",
+    ).toBe(
+      "https://[REDACTED]@example.test/sse?access_token=[REDACTED]&stream=true#jwt=[REDACTED]",
     );
+    expect(redactPayloadPreview("api_key=abc&stream=true")).toBe("api_key=[REDACTED]&stream=true");
     expect(redactPayloadPreview("Bearer abc.def.ghi")).toBe("Bearer [REDACTED]");
     expect(redactPayloadPreview('{"password":"incomplete"')).toBe(
       "[unparseable JSON preview omitted]",

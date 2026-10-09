@@ -3,11 +3,12 @@ import { patchFetch } from "../patch-fetch";
 
 describe("patch-fetch", () => {
   it("preserves a 403 JSON response and records an HTTP error instead of success", async () => {
-    const nativeFetch = vi.fn(async () =>
-      new Response('{"detail":"Forbidden"}', {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      }),
+    const nativeFetch = vi.fn(
+      async () =>
+        new Response('{"detail":"Forbidden"}', {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
     );
     vi.stubGlobal("window", { fetch: nativeFetch, location: { href: "https://example.test/" } });
     const starts: Array<{ url: string; status?: number }> = [];

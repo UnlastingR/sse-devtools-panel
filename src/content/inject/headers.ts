@@ -37,7 +37,10 @@ export function redactHeaderValue(name: string, value: string): string {
 
 /** Request body/query keys often use camelCase rather than HTTP header casing. */
 export function isSensitiveFieldName(name: string): boolean {
-  const normalized = name.trim().replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/_/g, "-");
+  const normalized = name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/_/g, "-");
   return (
     isSensitiveHeaderName(normalized) ||
     /^(token|jwt|bearer|password|passwd|secret|credential|credentials|client-secret|refresh-token|authorization-code|access-key|private-key|session-id|session-key)$/i.test(
@@ -50,9 +53,7 @@ export function isSensitiveFieldName(name: string): boolean {
 }
 
 function redactKeyValuePairs(value: string, includeUrlDelimiters: boolean): string {
-  const pairs = includeUrlDelimiters
-    ? /(^|[?&#])([^=&#?]+)=([^&#]*)/g
-    : /(^|&)([^=&]+)=([^&]*)/g;
+  const pairs = includeUrlDelimiters ? /(^|[?&#])([^=&#?]+)=([^&#]*)/g : /(^|&)([^=&]+)=([^&]*)/g;
   return value.replace(pairs, (match, prefix: string, rawName: string) => {
     let name = rawName;
     try {
@@ -79,10 +80,8 @@ export function redactPayloadPreview(preview: string): string {
   let sanitized = preview;
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     try {
-      sanitized = JSON.stringify(
-        JSON.parse(preview) as unknown,
-        (name: string, value: unknown) =>
-          name && isSensitiveFieldName(name) ? "[REDACTED]" : value,
+      sanitized = JSON.stringify(JSON.parse(preview) as unknown, (name: string, value: unknown) =>
+        name && isSensitiveFieldName(name) ? "[REDACTED]" : value,
       );
     } catch {
       // A truncated or malformed JSON body cannot be scrubbed reliably.
