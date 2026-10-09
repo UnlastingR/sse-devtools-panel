@@ -259,6 +259,7 @@ export function patchXhr(
   const PatchedXHR = new Proxy(OriginalXHR, {
     construct(target, args, newTarget) {
       const xhr = Reflect.construct(target, args, newTarget) as XMLHttpRequest;
+      if (!active) return xhr;
       return instrumentXhr(xhr);
     },
   });

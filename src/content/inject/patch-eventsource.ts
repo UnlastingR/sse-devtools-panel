@@ -168,6 +168,7 @@ export function patchEventSource(
   const PatchedEventSource = new Proxy(OriginalEventSource, {
     construct(target, args, newTarget) {
       const instance = Reflect.construct(target, args, newTarget) as EventSource;
+      if (!active) return instance;
       return instrumentEventSource(instance, args[0] as string | URL);
     },
   });

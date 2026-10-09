@@ -51,74 +51,34 @@ function install(): void {
   const postDiscard: PostDiscard = (requestId) =>
     post({ source: MESSAGE_SOURCE, type: "stream-discard", payload: { requestId } });
 
-  type HookRefs = {
-    fetch: typeof window.fetch;
-    eventSource: typeof window.EventSource;
-    xhr: typeof window.XMLHttpRequest;
-    webSocket: typeof window.WebSocket;
-  };
-
   let cleanups: Array<() => void> | null = null;
-  let hookRefs: HookRefs | null = null;
-  let hookWatchdog: number | null = null;
-
-  const hooksHealthy = (): boolean =>
-    Boolean(
-      hookRefs &&
-      window.fetch === hookRefs.fetch &&
-      window.EventSource === hookRefs.eventSource &&
-      window.XMLHttpRequest === hookRefs.xhr &&
-      window.WebSocket === hookRefs.webSocket,
-    );
 
   const uninstallHooks = (): void => {
     if (cleanups) {
       for (const cleanup of [...cleanups].reverse()) cleanup();
     }
     cleanups = null;
-    hookRefs = null;
   };
 
   const installHooks = (): void => {
+    if (cleanups) return;
     cleanups = [
       patchFetch(nextId, postStart, postChunk, postEnd, postError, postDiscard),
       patchEventSource(nextId, postStart, postChunk, postEnd, postError, postReconnect),
       patchXhr(nextId, postStart, postChunk, postEnd, postError, postDiscard),
       patchWebSocket(nextId, postStart, postChunk, postEnd, postError),
     ];
-    hookRefs = {
-      fetch: window.fetch,
-      eventSource: window.EventSource,
-      xhr: window.XMLHttpRequest,
-      webSocket: window.WebSocket,
-    };
-  };
-
-  const ensureHooks = (): void => {
-    if (hooksHealthy()) return;
-    uninstallHooks();
-    installHooks();
-  };
-
-  const startHookWatchdog = (): void => {
-    if (hookWatchdog !== null) return;
-    hookWatchdog = window.setInterval(ensureHooks, 2_000);
-  };
-
-  const stopHookWatchdog = (): void => {
-    if (hookWatchdog === null) return;
-    window.clearInterval(hookWatchdog);
-    hookWatchdog = null;
   };
 
   const setCaptureEnabled = (enabled: boolean): void => {
     if (enabled) {
-      ensureHooks();
-      startHookWatchdog();
+      // The service worker sends capture-control on every panel heartbeat.
+      // Never reinstall over another script's hook: that script may still
+      // delegate to ours, creating an unbounded nesting of fetch wrappers.
+      installHooks();
       return;
     }
 
-    stopHookWatchdog();
     uninstallHooks();
   };
 

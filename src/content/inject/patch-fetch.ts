@@ -1,6 +1,14 @@
 import { classifyHttpStatus, classifyThrownError } from "../../shared/stream-close";
 import type { StreamKind } from "../../shared/types";
-import { guessStreamKindFromRequest, resolveStreamKind } from "./detect";
+import {
+  guessStreamKindFromRequest,
+  payloadLooksLikeStreamTrue,
+  requestAcceptsEventStream,
+  requestAcceptsNdjson,
+  requestLooksLikeConnectJson,
+  resolveStreamKind,
+  urlLooksLikeStreamQuery,
+} from "./detect";
 import {
   collectFetchRequestMetaSync,
   normalizeResponseHeaders,
@@ -22,6 +30,54 @@ function isChatGptConversationStream(url: string): boolean {
       isConversationPath
     );
   } catch {
+    return false;
+  }
+}
+
+/**
+ * ChatGPT's ordinary JSON APIs are not streaming endpoints. Let them use the
+ * exact page-native fetch, including its original Promise and rejection timing.
+ * This is especially important for auth, account, model and bootstrap requests.
+ */
+export function bypassChatGptJsonApi(input: RequestInfo | URL, init?: RequestInit): boolean {
+  try {
+    const url = new URL(resolveUrl(input), window.location.href);
+    if (url.hostname !== "chatgpt.com" && !url.hostname.endsWith(".chatgpt.com")) {
+      return false;
+    }
+    if (!url.pathname.startsWith("/backend-api/")) return false;
+    if (
+      url.pathname === "/backend-api/conversation" ||
+      url.pathname === "/backend-api/f/conversation" ||
+      url.pathname === "/backend-api/f/conversation/resume"
+    ) {
+      return false;
+    }
+    if (urlLooksLikeStreamQuery(url.href)) return false;
+
+    const headers = new Headers(
+      init?.headers ??
+        (typeof input !== "string" && !(input instanceof URL) && input instanceof Request
+          ? input.headers
+          : undefined),
+    );
+    const requestHeaders = {
+      accept: headers.get("accept") ?? "",
+      "content-type": headers.get("content-type") ?? "",
+    };
+    if (
+      requestAcceptsEventStream(requestHeaders) ||
+      requestAcceptsNdjson(requestHeaders) ||
+      requestLooksLikeConnectJson(requestHeaders)
+    ) {
+      return false;
+    }
+    if (typeof init?.body === "string" && payloadLooksLikeStreamTrue(init.body)) {
+      return false;
+    }
+    return true;
+  } catch {
+    // Conservative fallback: capture rather than guessing for unknown URLs.
     return false;
   }
 }
@@ -183,6 +239,14 @@ export function patchFetch(
 
   const patchedFetch = new Proxy(originalFetch, {
     apply(target, thisArg, argArray) {
+      if (!active) {
+        // Another interceptor may retain this Proxy after our uninstall.
+        // Inactive hooks must delegate without an async boundary.
+        return Reflect.apply(target, thisArg, argArray);
+      }
+      if (bypassChatGptJsonApi(argArray[0] as RequestInfo | URL, argArray[1] as RequestInit)) {
+        return Reflect.apply(target, thisArg, argArray);
+      }
       return captureFetch(target, thisArg, argArray as Parameters<typeof window.fetch>);
     },
   });
