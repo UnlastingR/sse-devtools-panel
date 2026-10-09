@@ -239,6 +239,7 @@ export function patchWebSocket(
   const PatchedWebSocket = new Proxy(OriginalWebSocket, {
     construct(target, args, newTarget) {
       const instance = Reflect.construct(target, args, newTarget) as WebSocket;
+      if (!active) return instance;
       return instrumentWebSocket(instance, args[0] as string | URL);
     },
   });
