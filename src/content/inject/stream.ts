@@ -150,6 +150,14 @@ export function observeStreamReads(
   },
 ): void {
   const originalGetReader = stream.getReader.bind(stream);
+  // Observability must never turn a successful page read into a rejected one.
+  const safelyNotify = (notify: () => void): void => {
+    try {
+      notify();
+    } catch {
+      // Ignore all capture-side failures.
+    }
+  };
 
   const wrapReader = <R extends ReadableStreamDefaultReader<Uint8Array> | ReadableStreamBYOBReader>(
     reader: R,
@@ -165,20 +173,22 @@ export function observeStreamReads(
       try {
         const result = await originalRead(...readArgs);
         if (result.done) {
-          sink.onComplete();
+          safelyNotify(() => sink.onComplete());
         } else if ("value" in result && result.value) {
           const value = result.value as unknown;
           if (value instanceof Uint8Array) {
-            sink.onBytes(value);
+            safelyNotify(() => sink.onBytes(value));
           } else if (ArrayBuffer.isView(value)) {
             const view = value as ArrayBufferView;
-            sink.onBytes(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+            safelyNotify(() =>
+              sink.onBytes(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)),
+            );
           }
         }
         return result;
       } catch (err) {
         const classified = classifyThrownError(err);
-        sink.onError(classified.message, classified.closeReason);
+        safelyNotify(() => sink.onError(classified.message, classified.closeReason));
         throw err;
       }
     }) as ReadableStreamDefaultReader<Uint8Array>["read"];
@@ -186,8 +196,9 @@ export function observeStreamReads(
     reader.cancel = (async (
       ...cancelArgs: Parameters<ReadableStreamDefaultReader<Uint8Array>["cancel"]>
     ) => {
-      sink.onError("ReadableStream cancelled", "abort");
-      return originalCancel(...cancelArgs);
+      const result = originalCancel(...cancelArgs);
+      safelyNotify(() => sink.onError("ReadableStream cancelled", "abort"));
+      return result;
     }) as ReadableStreamDefaultReader<Uint8Array>["cancel"];
 
     return reader;
@@ -224,7 +235,16 @@ export function captureFetchResponseBody(
   }
 
   if (mode === "observe") {
-    observeStreamReads(response.body, sink);
+    try {
+      observeStreamReads(response.body, sink);
+    } catch {
+      // Non-extensible/native streams must still reach the page unchanged.
+      try {
+        sink.onError("Unable to attach passive stream capture", "error");
+      } catch {
+        // A broken recorder must not affect a fetch response.
+      }
+    }
     return response;
   }
 
@@ -238,7 +258,16 @@ export function captureFetchResponseBody(
     // fall through to page-read observation
   }
 
-  observeStreamReads(response.body, sink);
+  try {
+    observeStreamReads(response.body, sink);
+  } catch {
+    try {
+      sink.onError("Unable to attach passive stream capture", "error");
+    } catch {
+      // Never interrupt the application.
+    }
+    return response;
+  }
 
   try {
     const originalClone = response.clone.bind(response);

@@ -5,7 +5,9 @@ import {
   isSensitiveHeaderName,
   MAX_PAYLOAD_PREVIEW,
   normalizeHeaders,
+  redactCaptureUrl,
   redactHeaderValue,
+  redactPayloadPreview,
 } from "../headers";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -88,5 +90,48 @@ describe("headers", () => {
     expect(meta.headers?.accept).toBe("text/event-stream");
     expect(meta.payloadPreview).toBe(body);
     expect(meta.payloadTruncated).toBe(false);
+  });
+
+  it("redacts nested JSON secrets without hiding stream detection", () => {
+    const preview = redactPayloadPreview(
+      JSON.stringify({
+        stream: true,
+        prompt: "hello",
+        auth: { accessToken: "jwt-secret", refresh_token: "refresh-secret" },
+        items: [{ client_secret: "another-secret" }],
+      }),
+    );
+    expect(JSON.parse(preview)).toEqual({
+      stream: true,
+      prompt: "hello",
+      auth: { accessToken: "[REDACTED]", refresh_token: "[REDACTED]" },
+      items: [{ client_secret: "[REDACTED]" }],
+    });
+  });
+
+  it("redacts URL credentials, query parameters, and form fields", () => {
+    expect(
+      redactCaptureUrl("https://person:pw@example.test/sse?access_token=abc&stream=true#jwt=xyz"),
+    ).toBe("https://[REDACTED]@example.test/sse?access_token=[REDACTED]&stream=true#jwt=[REDACTED]");
+    expect(redactPayloadPreview("api_key=abc&stream=true")).toBe(
+      "api_key=[REDACTED]&stream=true",
+    );
+    expect(redactPayloadPreview("Bearer abc.def.ghi")).toBe("Bearer [REDACTED]");
+    expect(redactPayloadPreview('{"password":"incomplete"')).toBe(
+      "[unparseable JSON preview omitted]",
+    );
+  });
+
+  it("redacts secrets in synchronous fetch metadata", () => {
+    const meta = collectFetchRequestMetaSync("https://example.test/sse", {
+      body: JSON.stringify({
+        stream: true,
+        prompt: "hello",
+        sessionToken: "sensitive",
+      }),
+    });
+    expect(meta.payloadPreview).toContain('"stream":true');
+    expect(meta.payloadPreview).toContain('"sessionToken":"[REDACTED]"');
+    expect(meta.payloadPreview).not.toContain("sensitive");
   });
 });
